@@ -216,8 +216,8 @@ function toothAnyBop(t){if(t.missing)return false;if(t.bop6)return t.bop6.some(B
 function toothChanged(c,b){if(!b||!c)return false;
   if(c.ppd6||b.ppd6){const a=c.ppd6||[],d=b.ppd6||[],ba=c.bop6||[],bd=b.bop6||[];
     for(let i=0;i<6;i++){if((a[i]==null?null:a[i])!==(d[i]==null?null:d[i]))return true;if(!!ba[i]!==!!bd[i])return true;}
-    return (c.mobility||0)!==(b.mobility||0)||!!c.missing!==!!b.missing;}
-  return c.ppd!==b.ppd||c.mobility!==b.mobility||!!c.bop!==!!b.bop||!!c.pus!==!!b.pus||!!c.missing!==!!b.missing;}
+    return (c.mobility||0)!==(b.mobility||0)||!!c.missing!==!!b.missing||!!c.primary!==!!b.primary;}
+  return c.ppd!==b.ppd||c.mobility!==b.mobility||!!c.bop!==!!b.bop||!!c.pus!==!!b.pus||!!c.missing!==!!b.missing||!!c.primary!==!!b.primary;}
 function examStats(t,type){let mTeeth=0,bopPos=0,bopTot=0,deep=0,pusCnt=0;
   ORDER.forEach(n=>{const x=t[n];if(!x||x.missing||x.primary)return;
     if(type==='precision'){if(!x.ppd6)return;let measured=false;
@@ -252,7 +252,7 @@ const store={
 // ★PocketBase導入時：ミニPCでPBを起動し、下の url に院内サーバーのアドレスを入れるだけ。設定例：'http://192.168.1.50:8090'
 //   url='' のあいだは【端末内保存】（localStorage・iPad1台テスト運用モード）。LOCAL.on=false でメモリのみに戻せる。
 const PB={url:''};
-const APP_VERSION='0.9.0';const DATA_SCHEMA=1;
+const APP_VERSION='0.9.1';const DATA_SCHEMA=1;
 const LOCAL={on:true,key:'perio_app_data_v1'};
 // 接続状態：'local'（端末内保存）/ 'memory'（保存なし）/ 'online'（PB接続OK）/ 'offline'（PB到達不可）
 let netState='memory';
@@ -262,20 +262,28 @@ function localAvail(){try{const k='__t';localStorage.setItem(k,'1');localStorage
 function localPayload(){return {schema:DATA_SCHEMA,app:APP_VERSION,savedAt:new Date().toISOString(),
   patients:store.patients,exams:store.exams,docs:store.docs,staff:store.staff,clinic:store.clinic};}
 function persistLocal(){
-  if(netState!=='local')return;
-  try{localStorage.setItem(LOCAL.key,JSON.stringify(localPayload()));}
-  catch(e){toast('⚠ 端末への保存に失敗しました（容量不足の可能性）');}
+  if(netState!=='local')return true;
+  try{localStorage.setItem(LOCAL.key,JSON.stringify(localPayload()));return true;}
+  catch(e){toast('⚠ 端末への保存に失敗しました（容量不足の可能性）');return false;}
 }
 function loadLocal(){
-  try{const raw=localStorage.getItem(LOCAL.key);if(!raw)return null;
-    const d=JSON.parse(raw);if(!d||!Array.isArray(d.patients))return null;return d;}
-  catch(e){return null;}
+  let raw=null;try{raw=localStorage.getItem(LOCAL.key);}catch(e){return null;}
+  if(!raw)return null;
+  try{const d=JSON.parse(raw);if(!d||!Array.isArray(d.patients))throw new Error('形式不正');return d;}
+  catch(e){
+    // ★壊れた保存データは「無いもの」扱いにせず退避キーへ残す（サンプル上書きで元データを失わないため）
+    try{localStorage.setItem(LOCAL.key+'_broken',raw);}catch(_){}
+    return {__broken:true};
+  }
 }
 function applyLoaded(d){
-  store.patients=d.patients||[];
-  store.exams=(d.exams||[]).map(e=>({...e,type:e.type||'basic',teeth:normalizeTeeth(e.teeth)}));
-  store.docs=d.docs||[];store.staff=d.staff||[];
-  if(d.clinic)Object.assign(store.clinic,d.clinic);
+  // ★先に全件を検証・整形してから一括置換（途中で例外→患者だけ置換の不整合を防ぐ）
+  const pts=(d.patients||[]).filter(p=>p&&typeof p==='object');
+  const exs=(d.exams||[]).filter(e=>e&&typeof e==='object').map(e=>({...e,type:e.type||'basic',teeth:normalizeTeeth(e.teeth)}));
+  const dcs=(d.docs||[]).filter(x=>x&&typeof x==='object');
+  const stf=(d.staff||[]).filter(x=>x&&typeof x==='object');
+  store.patients=pts;store.exams=exs;store.docs=dcs;store.staff=stf;
+  if(d.clinic&&typeof d.clinic==='object')Object.assign(store.clinic,d.clinic);
 }
 function wipeLocal(){try{localStorage.removeItem(LOCAL.key);}catch(e){}}
 function pbUrl(col,id){return PB.url+'/api/collections/'+encodeURIComponent(col)+'/records'+(id?'/'+encodeURIComponent(id):'');}
@@ -305,16 +313,20 @@ const db={
     if(LOCAL.on&&localAvail()){
       netState='local';
       const d=loadLocal();
-      if(d)applyLoaded(d); // 保存済みデータを復元。無ければサンプルのまま（初回）＝バックアップ画面の「全データ初期化」でまっさらにできる
+      if(d&&d.__broken){ // 壊れた保存データ→退避済み。上書きせず警告してサンプルで起動
+        try{alert('⚠ 端末内の保存データが壊れていたため読み込めませんでした。\n壊れたデータは端末内に退避してあります（消えていません）。\nバックアップJSONをお持ちなら「💾 バックアップ」画面から復元してください。');}catch(_){}
+        persistLocal();
+      }
+      else if(d)applyLoaded(d); // 保存済みデータを復元。無ければサンプルのまま（初回）＝バックアップ画面の「全データ初期化」でまっさらにできる
       else persistLocal();  // 初回はサンプル込みで保存を確立
       return;
     }
     netState='memory';
   },
-  savePatient(p,isNew){if(isNew)store.patients.push(p);if(this.connected())pbWrite('patients',p,isNew,mapPatientToPB);persistLocal();},
-  saveExam(e,isNew){if(isNew)store.exams.push(e);if(this.connected())pbWrite('exams',e,isNew,mapExamToPB);persistLocal();},
+  savePatient(p,isNew){if(isNew)store.patients.push(p);if(this.connected())pbWrite('patients',p,isNew,mapPatientToPB);return persistLocal();},
+  saveExam(e,isNew){if(isNew)store.exams.push(e);if(this.connected())pbWrite('exams',e,isNew,mapExamToPB);return persistLocal();},
   deleteExam(id){store.exams=store.exams.filter(e=>e.id!==id);if(this.connected())fetch(pbUrl('exams',id),{method:'DELETE'}).catch(()=>{});persistLocal();},
-  saveDoc(d,isNew){if(isNew)store.docs.push(d);if(this.connected())pbWrite('docs',d,isNew,mapDocToPB);persistLocal();},
+  saveDoc(d,isNew){if(isNew)store.docs.push(d);if(this.connected())pbWrite('docs',d,isNew,mapDocToPB);return persistLocal();},
   deleteDoc(id){store.docs=store.docs.filter(d=>d.id!==id);if(this.connected())fetch(pbUrl('docs',id),{method:'DELETE'}).catch(()=>{});persistLocal();},
 };
 
@@ -678,8 +690,8 @@ function newDocData(kind,pid){
   const ex=store.patientExams(pid)[0]||null;
   const base={date:ymdToday(),teeth:docTeethFromExam(ex),examRef:ex?ex.date:null,doctor:store.clinic.doctor||''};
   if(kind==='s3'){
-    let bleed=false;
-    if(ex){const st=examStats(ex.teeth,ex.type||'basic');bleed=st.bopPct!=null&&st.bopPct>0;}
+    let bleed=false; // ★BOP率でなく「BOP+の歯が1本でもあるか」で判定（深さ未入力の歯のBOPも拾う）
+    if(ex)bleed=ORDER.some(n=>{const x=ex.teeth[n];return x&&!x.missing&&!x.primary&&toothAnyBop(x);});
     return Object.assign(base,{state:bleed?['歯ぐきに発赤・出血・腫れがあります']:[],statePart:'',other:[],otherText:'',guidance:[],lip:'',tongue:'',timeFrom:'',timeTo:'',hygienist:''});
   }
   let p4='',mob='';
@@ -825,11 +837,14 @@ function renderDoc(pid){
     <div class="wrap">${body}<div style="height:24px"></div></div>`;
   refreshDocSave();
 }
-function docSaveCore(){
+function docSaveCore(){ // 戻り値false＝端末への保存失敗（dirty保持）
   dc.data.date=dc.data.date||ymdToday();
-  if(dc.docId){const doc=store.docs.find(x=>x.id===dc.docId);if(doc){doc.kind=dc.kind;doc.date=dc.data.date;doc.data=clone(dc.data);db.saveDoc(doc,false);}}
-  else{const nd={id:generateId(),patientId:dc.pid,kind:dc.kind,date:dc.data.date,data:clone(dc.data)};db.saveDoc(nd,true);dc.docId=nd.id;}
-  dc.dirty=false;refreshDocSave();
+  let okSave=true;
+  if(dc.docId){const doc=store.docs.find(x=>x.id===dc.docId);if(doc){doc.kind=dc.kind;doc.date=dc.data.date;doc.data=clone(dc.data);okSave=db.saveDoc(doc,false)!==false;}}
+  else{const nd={id:generateId(),patientId:dc.pid,kind:dc.kind,date:dc.data.date,data:clone(dc.data)};
+    if(db.saveDoc(nd,true)===false){store.docs=store.docs.filter(x=>x.id!==nd.id);okSave=false;}else dc.docId=nd.id;}
+  if(!okSave){toast('⚠ 保存できませんでした。端末の空き容量を確認してください');refreshDocSave();return false;}
+  dc.dirty=false;refreshDocSave();return true;
 }
 // ── 文書の印刷（A4縦・お渡し用＋控） ──
 const dck=(on,l)=>`<span class="dck${on?' on':''}">${on?'☑':'□'}${esc(l)}</span>`;
@@ -957,9 +972,16 @@ function parseCSV(text){
   if(field!==''||row.length){row.push(field);rows.push(row);}
   return rows.filter(r=>r.some(x=>(x||'').trim()!==''));
 }
-function findCol(headers,cands){for(let i=0;i<headers.length;i++){const h=(headers[i]||'').replace(/\s/g,'');for(const c of cands)if(h.includes(c))return i;}return -1;}
+function findCol(headers,cands){ // ★完全一致を優先（「旧患者番号」より「患者番号」を選ぶ）→ 無ければ部分一致
+  const H=headers.map(h=>(h||'').replace(/\s/g,''));
+  for(const c of cands){const i=H.indexOf(c);if(i>=0)return i;}
+  for(let i=0;i<H.length;i++)for(const c of cands)if(H[i].includes(c))return i;
+  return -1;}
 function splitName(full){const s=(full||'').trim().replace(/[　\s]+/g,' ');const p=s.split(' ');return p.length>=2?{sei:p[0],mei:p.slice(1).join(' ')}:{sei:s,mei:''};}
-function parseBirth(v){const m=String(v||'').trim().match(/(\d{4})[\/\-.年](\d{1,2})[\/\-.月](\d{1,2})/);return m?m[1]+'-'+pad2(+m[2])+'-'+pad2(+m[3]):'';}
+function parseBirth(v){const m=String(v||'').trim().match(/(\d{4})[\/\-.年](\d{1,2})[\/\-.月](\d{1,2})/);if(!m)return '';
+  const y=+m[1],mo=+m[2],dd=+m[3];const dt=new Date(y,mo-1,dd); // ★実在しない日付（13月・2/30等）は不採用
+  if(dt.getFullYear()!==y||dt.getMonth()!==mo-1||dt.getDate()!==dd)return '';
+  return m[1]+'-'+pad2(mo)+'-'+pad2(dd);}
 function processImport(rows){
   if(!rows.length)return{error:'ファイルが空か、読み取れませんでした。'};
   const headers=rows[0];
@@ -972,7 +994,10 @@ function processImport(rows){
     if(nm.sei)cur.sei=nm.sei;cur.mei=nm.mei;if(birth)cur.birth=birth;byNo[recNo]=cur;}
   const items=Object.values(byNo).map(p=>{const name=(p.sei+' '+p.mei).trim();
     const ex=store.patients.find(x=>x.recNo===p.recNo);
-    let status='new';if(ex)status=(ex.name!==name||(p.birth&&ex.birth!==p.birth))?'update':'same';
+    // ★氏名が空の行では既存の氏名を消さない（空氏名は「差分」と見なさない）。新規で氏名なしは登録しない
+    let status='new';
+    if(ex)status=((name&&ex.name!==name)||(p.birth&&ex.birth!==p.birth))?'update':'same';
+    else if(!name)status='same';
     return{...p,name,status,exId:ex?ex.id:null};});
   return{items,total:rows.length-1,
     counts:{new:items.filter(i=>i.status==='new').length,update:items.filter(i=>i.status==='update').length,same:items.filter(i=>i.status==='same').length}};
@@ -980,7 +1005,7 @@ function processImport(rows){
 function applyImport(items){let added=0,updated=0;
   items.forEach(it=>{
     if(it.status==='new'){const np={id:generateId(),no:store.nextNo(),recNo:it.recNo,chartNo:'',sei:it.sei,mei:it.mei,seiKana:'',meiKana:'',name:it.name,kana:'',birth:it.birth,gender:'',notes:''};db.savePatient(np,true);added++;}
-    else if(it.status==='update'){const p=store.getPatient(it.exId);if(p){p.sei=it.sei;p.mei=it.mei;p.name=it.name;if(it.birth)p.birth=it.birth;db.savePatient(p,false);updated++;}}});
+    else if(it.status==='update'){const p=store.getPatient(it.exId);if(p){if(it.name){p.sei=it.sei;p.mei=it.mei;p.name=it.name;}if(it.birth)p.birth=it.birth;db.savePatient(p,false);updated++;}}});
   return{added,updated};
 }
 let importData=null;
@@ -1034,7 +1059,7 @@ function vNorm(s){
   s=s.replace(/ポケットの?深さ|ぽけっと/g,'ポケット');
   s=s.replace(/みぎうえ|右上顎|上顎右/g,'右上').replace(/ひだりうえ|左上顎|上顎左/g,'左上').replace(/みぎした|右下顎|下顎右/g,'右下').replace(/ひだりした|左下顎|下顎左/g,'左下');
   // 「一個前に戻る」等のundo系を「取り消し」に統一（「戻す」他動詞＝undo、「戻る」自動詞＝歯移動は別）
-  s=s.replace(/(?:一個|1個|いっこ|一つ|ひとつ|1つ)(?:前)?(?:に)?戻る|一個前|いっこまえ|1個前|元に戻す|戻す/g,'取り消し');
+  s=s.replace(/(?:一個|1個|いっこ|一つ|ひとつ|1つ)(?:前)?(?:に)?戻[るす]|一個前|いっこまえ|1個前|元に戻す|戻す/g,'取り消し');
   s=s.replace(/まで/g,'迄'); // 「で」除去より先に保護（範囲指定用）
   // 単位・番号・言い淀み・助詞（意味を持たない語）を除去
   s=s.replace(/ミリメートル|ミリ|みり|㎜|ｍｍ|mm/gi,'');
@@ -1074,6 +1099,7 @@ function vParse(s,mode){
     [/^(右上|左上|右下|左下)([1-8])(1[0-5]|[0-9])/,m=>({t:'assign',tooth:VQUAD[m[1]]*10+ +m[2],v:+m[3]}),'nobop'],
     [/^(右上|左上|右下|左下)([1-8])/,m=>({t:'tooth',tooth:VQUAD[m[1]]*10+ +m[2]})],
     [/^欠損/,()=>({t:'missing'})],
+    [/^排膿(?:なし|マイナス|まいなす|陰性)/,()=>({t:'bopEnter',kind:'none'})], // 「排膿なし」＝消す（「排膿」より先に判定）
     [/^排膿(?:入力)?/,()=>({t:'bopEnter',kind:'pus'})],
     [/^(?:出血なし|マイナス|まいなす|陰性|消す|クリア)/,()=>({t:'bopEnter',kind:'none'})],
     [/^(?:出血入力|出血あり|出血|プラス|ぷらす|陽性)/,()=>({t:'bopEnter',kind:'bop'})],
@@ -1087,7 +1113,8 @@ function vParse(s,mode){
   let i=0;
   while(i<s.length){const sub=s.slice(i);let hit=false;
     for(const r of RES){if(r[2]==='nobop'&&cm==='bop')continue;const m=sub.match(r[0]);if(m){const c=r[1](m);cmds.push(c);i+=m[0].length;hit=true;
-      if(c.t==='bopEnter')cm='bop';else if(c.t==='mode')cm=c.m;else if(c.t==='teethSet'&&c.target==='mob')cm='mob';break;}}
+      if(c.t==='bopEnter')cm='bop';else if(c.t==='mode')cm=c.m;else if(c.t==='teethSet'&&c.target==='mob')cm='mob';
+      else if((c.t==='bulk'||c.t==='quad')&&c.target)cm=c.target;break;}} // ★一括のモード切替（ポケットすべて3…）にも後続を追従
     if(!hit){noise+=s[i];i++;}}
   return{cmds,noise};
 }
@@ -1128,7 +1155,11 @@ function vApply(res,rawText){
       for(const d of c.digs){const tn=c.q*10+ +d;if(setVal(tn,tg,c.v)){cnt++;ns+=d;}}
       if(cnt){vc.lastTooth=c.q*10+ +c.digs[c.digs.length-1];notes.push(VQNAME[c.q]+ns+'が'+c.v);ok++;}else rej++;continue;}
     if(c.t==='cursor'){
-      if(vc.mode==='bop'){if(applyBK(c.tooth,vc.bopKind)){vc.cursor=c.tooth;vc.lastTooth=c.tooth;pendFrom=c.tooth;vc.bopQuad=Math.floor(c.tooth/10);notes.push(vToothName(c.tooth)+'から');ok++;}else rej++;continue;}
+      if(vc.mode==='bop'){
+        let st=c.tooth;if(vSkip(st))st=vNextAfter(st); // ★始点が欠損/乳歯なら巡回順で次の歯から
+        if(st!=null&&applyBK(st,vc.bopKind)){vc.cursor=st;vc.lastTooth=st;pendFrom=st;vc.bopQuad=Math.floor(st/10);notes.push(vToothName(st)+'から');ok++;}
+        else{vc.bopQuad=null;rej++;} // ★失敗時は前の方角を無効化（後続数字が別方角に誤爆しないように）
+        continue;}
       const n=vFirstFrom(c.tooth);if(n){vc.cursor=n;notes.push(vToothName(n)+'から');ok++;}else rej++;continue;}
     if(c.t==='digit'){
       if(vc.mode==='bop'){
@@ -1145,7 +1176,12 @@ function vApply(res,rawText){
       if(vc.mode==='bop'){rej++;continue;}
       if(setVal(c.tooth,vc.mode,c.v)){vc.lastTooth=c.tooth;just=c.tooth;vc.cursor=vNextAfter(c.tooth);notes.push(vToothName(c.tooth)+'は'+c.v);ok++;}else rej++;continue;}
     if(c.t==='tooth'){
-      if(vc.mode==='bop'){if(applyBK(c.tooth,vc.bopKind)){vc.cursor=c.tooth;vc.lastTooth=c.tooth;just=c.tooth;vc.bopQuad=Math.floor(c.tooth/10);notes.push(vToothName(c.tooth)+BKN[vc.bopKind]);ok++;}else rej++;}
+      if(vc.mode==='bop'){
+        if(pf!=null){ // ★「右上3から左上3」＝範囲塗り（始点は塗り済み・終点まで巡回順で塗る）
+          const si=VORDER.indexOf(pf),ei=VORDER.indexOf(c.tooth);
+          if(si>=0&&ei>si){let cnt=0;for(let k=si+1;k<=ei;k++)if(applyBK(VORDER[k],vc.bopKind))cnt++;
+            if(cnt){vc.cursor=vc.lastTooth=c.tooth;vc.bopQuad=Math.floor(c.tooth/10);notes.push(vToothName(pf)+'から'+vToothName(c.tooth)+BKN[vc.bopKind]);ok++;}else rej++;continue;}}
+        if(applyBK(c.tooth,vc.bopKind)){vc.cursor=c.tooth;vc.lastTooth=c.tooth;just=c.tooth;vc.bopQuad=Math.floor(c.tooth/10);notes.push(vToothName(c.tooth)+BKN[vc.bopKind]);ok++;}else rej++;}
       else{const n=vFirstFrom(c.tooth);if(n){vc.cursor=n;vc.lastTooth=n;just=n;notes.push(vToothName(n)+'へ');ok++;}else rej++;}continue;}
     if(c.t==='toothOff'){if(applyBK(c.tooth,'none')){notes.push(vToothName(c.tooth)+'BOP−');ok++;}else rej++;continue;}
     if(c.t==='missing'){const n=vc.cursor;if(n){rec(n,'missing',true);rec(n,'ppd',null);rec(n,'mobility',null);rec(n,'bop',false);rec(n,'pus',false);vc.cursor=vNextAfter(n);notes.push(vToothName(n)+'欠損');ok++;}else rej++;continue;}
@@ -1174,7 +1210,10 @@ function vApply(res,rawText){
       ORDER.forEach(n=>{const x=pe.teeth[n];if(x.missing||x.primary)return;const cur=(tg==='mob')?x.mobility:x.ppd;if(cur==null&&setVal(n,tg,c.v))cnt++;});
       if(cnt){notes.push('その他すべて'+c.v);ok++;}else rej++;continue;}
     if(c.t==='bulkBopOff'){ORDER.forEach(n=>{const x=pe.teeth[n];if(!x.missing){if(x.bop)rec(n,'bop',false);if(x.pus)rec(n,'pus',false);}});notes.push('出血・排膿すべて−');ok++;continue;}
-    if(c.t==='undo'){if(undoOne()){notes.push('取り消し');vc.cursor=null;ok++;}else rej++;continue;}
+    if(c.t==='undo'){if(undoOne()){notes.push('取り消し');
+      // ★取り消し後は「最後に編集した歯」へカーソルを戻す＝言い直しがそのまま入る
+      const back=(vc.lastTooth!=null&&!vSkip(vc.lastTooth))?vc.lastTooth:vc.cursor;
+      vc.cursor=(back!=null&&!vSkip(back))?back:vFirstFrom(null);ok++;}else rej++;continue;}
     if(c.t==='step'){const n=c.d>0?(vc.cursor?vNextAfter(vc.cursor):vFirstFrom(null)):vPrevBefore(vc.cursor);
       if(n){vc.cursor=n;notes.push(vToothName(n)+'へ');ok++;}else rej++;continue;}
   }
@@ -1196,7 +1235,11 @@ function vHandle(raw){
   vc.heard=(raw||'').trim();vc.heardFinal=true;
   const s=vNorm(raw);
   if(!s){vc.log.unshift({raw:vc.heard,note:'（数字・歯番として認識できず）',rej:1});vc.log=vc.log.slice(0,8);if(vc.sound)vBeep(false);vRefreshPanel();return;}
-  vApply(vParse(s,vc.mode),raw);
+  const res=vParse(s,vc.mode);
+  // ★方角の聞き取りが化けた発話（「はい上76」等＝解釈できない部分に上下左右が残る）は、数字だけ拾って誤った歯に書かない
+  if(/[上下左右]/.test(res.noise)&&res.cmds.length&&res.cmds.every(c=>c.t==='digit')){
+    vc.log.unshift({raw:vc.heard,note:'（位置の聞き取りが不確かなため入力しませんでした。もう一度どうぞ）',rej:1});vc.log=vc.log.slice(0,8);if(vc.sound)vBeep(false);vRefreshPanel();return;}
+  vApply(res,raw);
 }
 function vHeardHTML(){return vc.heard?`<span style="color:${vc.heardFinal?'#111':'#94a3b8'};font-weight:600">${esc(vc.heard)}</span>`:'<span style="color:var(--faint)">（マイクに向かって話してください…）</span>';}
 function vUpdateHeard(){const el=document.getElementById('v-heard');if(el)el.innerHTML=vHeardHTML();}
@@ -1579,7 +1622,15 @@ window.APP={
   vOptSound:()=>{vc.sound=!vc.sound;vRefreshPanel();},
   vOptEcho:()=>{vc.echo=!vc.echo;vRefreshPanel();},
   vRunText:()=>{const el=document.getElementById('v-text');if(!el||!el.value.trim())return;if(vc.cursor==null)vc.cursor=vFirstFrom(null);vHandle(el.value);const el2=document.getElementById('v-text');if(el2){el2.value='';el2.focus();}},
-  peSave:()=>{pe.dirty=false;if(pe.examId){const ex=store.exams.find(e=>e.id===pe.examId);if(ex){ex.date=pe.date;ex.examiner=pe.examiner;ex.teeth=clone(pe.teeth);db.saveExam(ex,false);}toast('変更を保存しました');}else{const ne={id:generateId(),patientId:pe.pid,date:pe.date,examiner:pe.examiner,type:pe.type,teeth:clone(pe.teeth)};db.saveExam(ne,true);toast('検査を保存しました');}go({name:'patientDetail',patientId:pe.pid});},
+  peSave:()=>{ // ★保存に失敗したら成功扱いにしない（dirtyを保持・画面に留まる）
+    if(pe.examId){const ex=store.exams.find(e=>e.id===pe.examId);
+      if(ex){ex.date=pe.date;ex.examiner=pe.examiner;ex.teeth=clone(pe.teeth);
+        if(db.saveExam(ex,false)===false){toast('⚠ 保存できませんでした。端末の空き容量を確認してください');return;}}
+      pe.dirty=false;toast('変更を保存しました');}
+    else{const ne={id:generateId(),patientId:pe.pid,date:pe.date,examiner:pe.examiner,type:pe.type,teeth:clone(pe.teeth)};
+      if(db.saveExam(ne,true)===false){store.exams=store.exams.filter(x=>x.id!==ne.id);toast('⚠ 保存できませんでした。端末の空き容量を確認してください');return;}
+      pe.dirty=false;pe.examId=ne.id;toast('検査を保存しました');}
+    go({name:'patientDetail',patientId:pe.pid});},
   peDelete:()=>{if(confirm('この検査（'+ymdJP(pe.date)+'）を削除しますか？この操作は取り消せません。')){pe.dirty=false;db.deleteExam(pe.examId);toast('検査を削除しました');go({name:'patientDetail',patientId:pe.pid});}},
   // 文書（様式1・様式3）
   newDoc:(pid,kind)=>{
@@ -1601,8 +1652,8 @@ window.APP={
   docKind:k=>{if(dc.kind===k)return;dc.kind=k;dc.dirty=true;render();},
   docTooth:n=>{const cur=dc.data.teeth[n]||0;dc.data.teeth[n]=canBePrimary(n)?(cur+1)%3:(cur===0?1:0);dc.dirty=true;render();},
   docCopyTog:()=>{dc.copy=!dc.copy;render();},
-  docSave:()=>{docSaveCore();toast('文書を保存しました');go({name:'patientDetail',patientId:dc.pid});},
-  docPrint:()=>{docSaveCore();printDoc();render();},
+  docSave:()=>{if(!docSaveCore())return;toast('文書を保存しました');go({name:'patientDetail',patientId:dc.pid});},
+  docPrint:()=>{if(!docSaveCore())return;printDoc();render();},
   docDelete:()=>{if(confirm('この文書（'+ymdJP(dc.data.date)+'）を削除しますか？この操作は取り消せません。')){dc.dirty=false;db.deleteDoc(dc.docId);toast('文書を削除しました');go({name:'patientDetail',patientId:dc.pid});}},
   clinicSet:(k,v)=>{store.clinic[k]=v;persistLocal();},
 };
@@ -1691,6 +1742,27 @@ function runSelfTest(){
   eq('csv 生年月日','1979-04-23',parseBirth('1979/04/23'));
   eq('csv 列検出',1,findCol(['予約年月日','患者番号','患者氏名'],['患者番号']));
   eq('csv クオート',[['a','b,c'],['1','2']],parseCSV('a,"b,c"\n1,2'));
+  // --- 2026-09 Codexデバッグ由来の回帰チェック ---
+  eq('norm 一つ戻す→取り消し','取り消し',vNorm('一つ戻す'));
+  eq('parse 排膿なし=消す','none',P('排膿なし')[0].kind);
+  eq('parse 排膿なし右上6',['bopEnter','tooth'],P('排膿なし右上6').map(c=>c.t));
+  eq('parse bulk後モード追従',['bulk','assign'],P('ポケットすべて3右上45','bop').map(c=>c.t));
+  eq('csv 列検出は完全一致優先',1,findCol(['旧患者番号','患者番号'],['患者番号']));
+  eq('csv 不正日付13月は拒否','',parseBirth('2024/13/40'));
+  eq('csv 不正日付2月30日は拒否','',parseBirth('2023/02/30'));
+  eq('csv うるう年2/29は受理','2024-02-29',parseBirth('2024/02/29'));
+  {const a=freshTeeth()[11],b=freshTeeth()[11];const c={...a,primary:true};ok('chg 乳歯フラグのみ→true',toothChanged(c,b));}
+  {const sp=store.patients,se=store.exams,sd=store.docs,ss=store.staff; // applyLoadedの原子性（不正要素を落として全置換・例外なし）
+   let threw=false;try{applyLoaded({patients:[{id:'tA'}],exams:[null,{id:'tE',teeth:{}}],docs:[null],staff:[]});}catch(e){threw=true;}
+   ok('復元 不正要素でも例外なし',!threw);
+   eq('復元 null検査は除外',['tE'],store.exams.map(e=>e.id));
+   ok('復元 歯式は32歯に補完',ORDER.every(n=>store.exams[0].teeth[n]));
+   store.patients=sp;store.exams=se;store.docs=sd;store.staff=ss;}
+  {const sp=store.patients; // CSV空氏名は既存を消さない
+   store.patients=[{id:'tp1',recNo:'901',name:'既存 太郎',sei:'既存',mei:'太郎',birth:'1980-01-01'}];
+   const r=processImport(parseCSV('患者番号,患者氏名,生年月日\n901,,1980/01/01\n902,,1990/01/01'));
+   eq('csv 空氏名は変更なし扱い',['same','same'],r.items.map(i=>i.status));
+   store.patients=sp;}
   // --- 描画 ---
   const fails=T.filter(t=>!t.pass);
   document.getElementById('app').innerHTML=`
