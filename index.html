@@ -815,33 +815,25 @@ const store={
 
 // ───────── データ層（端末内保存 ⇄ PocketBase ⇄ メモリ 切替アダプタ） ─────────
 // ★PocketBase導入時：ミニPCでPBを起動し、下の url に院内サーバーのアドレスを入れるだけ。設定例：'http://192.168.1.50:8090'
-//   url='' のあいだは【端末内保存】（localStorage・iPad1台テスト運用モード）。LOCAL.on=false でメモリのみに戻せる。
+//   url='' のあいだは【端末内保存】。LOCAL.on=false でメモリのみに戻せる。
 const PB={url:''};
-const APP_VERSION='0.10.0';const DATA_SCHEMA=1;
-const LOCAL={on:true,key:'perio_app_data_v1'};
+const APP_VERSION='0.11.0';const DATA_SCHEMA=1;
+// 端末内保存の書き先：IndexedDB（容量はGB単位）が本命。IndexedDB を一度も使えていない端末だけ従来の localStorage で動かす。
+// localStorage は Safari では配信元ごとに5MB（1字2バイトで数える）で、同じ配信元の院内アプリと枠を共有するため、1日30〜40件では約1か月で満杯になる。
+const LOCAL={on:true,key:'perio_app_data_v1',backend:null,idbName:'perio_app',migratedMark:'perio_idb_migrated',lastSavedAt:null};
 // 接続状態：'local'（端末内保存）/ 'memory'（保存なし）/ 'online'（PB接続OK）/ 'offline'（PB到達不可）
 let netState='memory';
-// ★注意：localStorageは【配信URL（オリジン）単位】。URLが変わるとデータは引き継がれない。
+let storageProblem=''; // 端末への保存を止めている理由（ホームに赤帯で出す）
+// ★注意：localStorage も IndexedDB も【配信URL（オリジン）単位】。URLが変わるとデータは引き継がれない。
 //   テスト運用は必ず固定URL（GitHub Pages等）で。一時トンネルURLでの実データ入力は禁止。
 function localAvail(){try{const k='__t';localStorage.setItem(k,'1');localStorage.removeItem(k);return true;}catch(e){return false;}}
 function localPayload(){return {schema:DATA_SCHEMA,app:APP_VERSION,savedAt:new Date().toISOString(),
   patients:store.patients,exams:store.exams,docs:store.docs,staff:store.staff,clinic:store.clinic};}
-function persistLocal(){
-  if(netState!=='local')return true;
-  try{localStorage.setItem(LOCAL.key,JSON.stringify(localPayload()));}
-  catch(e){toast('⚠ 端末への保存に失敗しました（容量不足の可能性）');return false;}
-  try{if(vault)vault.markDirty();}catch(_){} // 院内保管庫（Mac mini）へ複製を送る予約。失敗しても端末保存には影響しない
-  return true;
-}
-function loadLocal(){
+function loadLocalLS(){
   let raw=null;try{raw=localStorage.getItem(LOCAL.key);}catch(e){return null;}
   if(!raw)return null;
   try{const d=JSON.parse(raw);if(!d||!Array.isArray(d.patients))throw new Error('形式不正');return d;}
-  catch(e){
-    // ★壊れた保存データは「無いもの」扱いにせず退避キーへ残す（サンプル上書きで元データを失わないため）
-    try{localStorage.setItem(LOCAL.key+'_broken',raw);}catch(_){}
-    return {__broken:true};
-  }
+  catch(e){return {__broken:true,raw};}
 }
 function applyLoaded(d){
   // ★先に全件を検証・整形してから一括置換（途中で例外→患者だけ置換の不整合を防ぐ）
@@ -852,16 +844,165 @@ function applyLoaded(d){
   store.patients=pts;store.exams=exs;store.docs=dcs;store.staff=stf;
   if(d.clinic&&typeof d.clinic==='object')Object.assign(store.clinic,d.clinic);
 }
-function wipeLocal(){try{localStorage.removeItem(LOCAL.key);}catch(e){}}
 // 置き換えて端末に保存。保存に失敗したら画面の中身も元に戻して false（画面と端末の保存が食い違わないように）
-function applyLoadedAndSave(d){
+async function applyLoadedAndSave(d){
   const prev={patients:store.patients,exams:store.exams,docs:store.docs,staff:store.staff,clinic:Object.assign({},store.clinic)};
   applyLoaded(d);
-  if(persistLocal())return true;
+  if(await persistAll())return true;
   store.patients=prev.patients;store.exams=prev.exams;store.docs=prev.docs;store.staff=prev.staff;
   Object.keys(store.clinic).forEach(k=>delete store.clinic[k]);Object.assign(store.clinic,prev.clinic);
   return false;
 }
+
+// ── IndexedDB（患者・検査・文書は1件ずつ別レコード。保存は変えた1件だけ書くので件数が増えても遅くならない） ──
+const IDB_STORES=['patients','exams','docs'];
+let idbConn=null;
+// 一覧の並び（登録順）を保つための通し番号。レコードは {id, seq, v:元のデータ} で持ち、データの形は変えない
+const idbSeq={patients:new Map(),exams:new Map(),docs:new Map()};let idbMaxSeq=0;
+function idbReq(r){return new Promise((res,rej)=>{r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
+function idbOpen(){return new Promise((res,rej)=>{
+  let r;try{r=indexedDB.open(LOCAL.idbName,1);}catch(e){rej(e);return;}
+  r.onupgradeneeded=()=>{const d=r.result;
+    IDB_STORES.forEach(s=>{if(!d.objectStoreNames.contains(s))d.createObjectStore(s,{keyPath:'id'});});
+    if(!d.objectStoreNames.contains('meta'))d.createObjectStore('meta'); // staff / clinic / info
+    if(!d.objectStoreNames.contains('kv'))d.createObjectStore('kv');};  // 下書き・壊れたデータの退避
+  r.onsuccess=()=>{const d=r.result;d.onversionchange=()=>{try{d.close();}catch(_){}};res(d);};
+  r.onerror=()=>rej(r.error);r.onblocked=()=>rej(new Error('blocked'));});}
+// 1つのトランザクションで書く。全部書けたときだけ true（途中で失敗すれば何も書かれない）
+function idbTx(stores,fn){return new Promise(res=>{
+  let tx;try{tx=idbConn.transaction(stores,'readwrite');}catch(e){res(false);return;}
+  tx.oncomplete=()=>res(true);tx.onerror=()=>res(false);tx.onabort=()=>res(false);
+  try{fn(tx);}catch(e){try{tx.abort();}catch(_){}res(false);}});}
+function idbRec(col,obj){let s=idbSeq[col].get(obj.id);if(s==null){s=++idbMaxSeq;idbSeq[col].set(obj.id,s);}return {id:obj.id,seq:s,v:obj};}
+async function idbLoadAll(){
+  const tx=idbConn.transaction(['patients','exams','docs','meta'],'readonly');
+  const all=s=>idbReq(tx.objectStore(s).getAll());const meta=k=>idbReq(tx.objectStore('meta').get(k));
+  const [ps,es,ds,staff,clinic,info]=await Promise.all([all('patients'),all('exams'),all('docs'),meta('staff'),meta('clinic'),meta('info')]);
+  const seqs={};let mx=0;
+  const un=(col,arr)=>{seqs[col]=new Map();return (arr||[]).filter(r=>r&&r.v&&typeof r.v==='object').sort((a,b)=>a.seq-b.seq)
+    .map(r=>{seqs[col].set(r.id,r.seq);if(r.seq>mx)mx=r.seq;return r.v;});};
+  const data={patients:un('patients',ps),exams:un('exams',es),docs:un('docs',ds),staff:Array.isArray(staff)?staff:[],clinic:clinic&&typeof clinic==='object'?clinic:null};
+  return {info:info||null,data,seqs,maxSeq:mx};
+}
+async function idbReplaceAll(info){
+  const maps={};let seq=0;const cols={patients:store.patients,exams:store.exams,docs:store.docs};
+  const ok=await idbTx(['patients','exams','docs','meta'],tx=>{
+    for(const c of IDB_STORES){const os=tx.objectStore(c);os.clear();maps[c]=new Map();
+      for(const o of cols[c]){if(!o||o.id==null)continue;seq++;maps[c].set(o.id,seq);os.put({id:o.id,seq,v:o});}}
+    const m=tx.objectStore('meta');m.put(store.staff,'staff');m.put(store.clinic,'clinic');if(info)m.put(info,'info');});
+  if(ok){IDB_STORES.forEach(c=>{idbSeq[c]=maps[c];});idbMaxSeq=seq;}
+  return ok;
+}
+function lsPersistAll(){try{localStorage.setItem(LOCAL.key,JSON.stringify(localPayload()));return true;}catch(e){return false;}}
+
+// ── 保存の窓口（戻り値 Promise<boolean>。false＝端末に書けなかった → 呼び出し側で画面の変更を元に戻す） ──
+// 保存を止めている（storageProblem）ときは「保存できなかった」と返す。PocketBase やメモリのみのときは従来どおり成功扱い
+function persistSkip(){return !storageProblem;}
+function persistDone(ok){if(ok){LOCAL.lastSavedAt=new Date().toISOString();try{if(vault)vault.markDirty();}catch(_){}scheduleStorageInfo();}return ok;}
+async function persistPut(col,objs){if(netState!=='local')return persistSkip();const list=Array.isArray(objs)?objs:[objs];
+  return persistDone(LOCAL.backend==='idb'?await idbTx([col],tx=>{const os=tx.objectStore(col);list.forEach(o=>os.put(idbRec(col,o)));}):lsPersistAll());}
+async function persistDel(col,id){if(netState!=='local')return persistSkip();
+  return persistDone(LOCAL.backend==='idb'?await idbTx([col],tx=>tx.objectStore(col).delete(id)):lsPersistAll());}
+async function persistMeta(){if(netState!=='local')return persistSkip();
+  return persistDone(LOCAL.backend==='idb'?await idbTx(['meta'],tx=>{const m=tx.objectStore('meta');m.put(store.staff,'staff');m.put(store.clinic,'clinic');}):lsPersistAll());}
+async function persistAll(info){if(netState!=='local')return persistSkip();
+  return persistDone(LOCAL.backend==='idb'?await idbReplaceAll(info):lsPersistAll());}
+
+// ── 起動時の読み込み ──
+const sameJSON=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+function storeSnapshot(){return {patients:store.patients,exams:store.exams,docs:store.docs,staff:store.staff,clinic:store.clinic};}
+function brokenAlert(){try{alert('⚠ 端末内の保存データが壊れていたため読み込めませんでした。\n壊れたデータは端末内に退避してあります（消えていません）。\nバックアップJSONをお持ちなら「💾 バックアップ」画面から復元してください。');}catch(_){}}
+function holdVault(){vaultHold=VAULT_HOLD_MSG;try{localStorage.setItem(VAULT_HOLD_KEY,'1');}catch(_){}} // 読み直しても停止が続くよう端末に記録
+// IndexedDB で起動できたら true。一度も使えていない端末で開けなければ false（→ localStorage で起動）
+async function loadIDB(){
+  if(typeof indexedDB==='undefined'||!indexedDB)return false;
+  let marked=false;try{marked=!!localStorage.getItem(LOCAL.migratedMark);}catch(_){}
+  try{idbConn=await idbOpen();}
+  catch(e){idbConn=null;
+    if(!marked)return false;
+    // 移行済みの端末：古い localStorage に戻すと、IndexedDB 側の新しい記録と食い違うので保存を止める
+    storageProblem='端末の保存場所（IndexedDB）を開けませんでした。記録は消えていません。アプリを閉じて開き直してください。直らないときは入力せず、院長に連絡してください。';
+    netState='memory';return true;}
+  let got;
+  try{got=await idbLoadAll();}
+  catch(e){idbConn=null;storageProblem='端末の保存データを読み込めませんでした（記録は消えていません）。アプリを閉じて開き直してください。';netState='memory';return true;}
+  LOCAL.backend='idb';netState='local';
+  if(got.info){ // 通常の起動
+    applyLoaded(got.data);IDB_STORES.forEach(c=>{idbSeq[c]=got.seqs[c];});idbMaxSeq=got.maxSeq;
+    try{if(!marked)localStorage.setItem(LOCAL.migratedMark,'1');
+      const old=loadLocalLS(); // 移行後に残った古い写しは、移行時点より新しくなければ片づける（院内アプリ共有の5MB枠を空ける）
+      if(old&&!old.__broken&&(!old.savedAt||!got.info.migratedAt||old.savedAt<=got.info.migratedAt))localStorage.removeItem(LOCAL.key);}catch(_){}
+    return true;}
+  const now=new Date().toISOString();
+  const d=loadLocalLS();
+  if(d&&d.__broken){ // 壊れた保存データ：IndexedDB に退避し、読み戻して確かめてから見本で起動
+    const k='broken_'+now;
+    let kept=await idbTx(['kv'],tx=>tx.objectStore('kv').put({at:now,raw:d.raw},k));
+    if(kept){try{const r=await idbReq(idbConn.transaction(['kv'],'readonly').objectStore('kv').get(k));kept=!!r&&r.raw===d.raw;}catch(_){kept=false;}}
+    if(!kept){storageProblem='端末内の保存データが壊れていて、退避用のコピーも作れませんでした。元のデータを守るため、この端末への保存を止めています（見本データで表示中・入力は保存されません）。院長に連絡してください。';
+      netState='memory';LOCAL.backend=null;try{alert('⚠ '+storageProblem);}catch(_){}return true;}
+    holdVault();brokenAlert();
+    if(await persistAll({schema:DATA_SCHEMA,createdAt:now,from:'broken-localStorage',brokenKey:k})){
+      try{localStorage.removeItem(LOCAL.key);localStorage.setItem(LOCAL.migratedMark,'1');}catch(_){}}
+    return true;}
+  if(d){ // 従来の localStorage から移す：写す → 読み戻して1件ずつ照合 → 一致したら元を消す
+    applyLoaded(d);
+    const want=storeSnapshot();
+    let ok=await persistAll({schema:DATA_SCHEMA,migratedAt:now,from:'localStorage',counts:{patients:want.patients.length,exams:want.exams.length,docs:want.docs.length}});
+    if(ok){try{const back=await idbLoadAll();ok=sameJSON(back.data.patients,want.patients)&&sameJSON(back.data.exams,want.exams)&&sameJSON(back.data.docs,want.docs)&&sameJSON(back.data.staff,want.staff)&&sameJSON(back.data.clinic,want.clinic);}catch(_){ok=false;}}
+    if(ok){try{localStorage.removeItem(LOCAL.key);localStorage.setItem(LOCAL.migratedMark,'1');}catch(_){}return true;}
+    // 照合に失敗：IndexedDB の中途半端な写しを消し、今回は従来どおり localStorage で動かす（元データはそのまま）
+    await idbTx(['patients','exams','docs','meta'],tx=>{['patients','exams','docs','meta'].forEach(s=>tx.objectStore(s).clear());});
+    idbConn=null;LOCAL.backend='ls';return true;}
+  // 初回（保存データなし）：見本込みで保存を確立
+  if(await persistAll({schema:DATA_SCHEMA,createdAt:now,from:'new'})){try{localStorage.setItem(LOCAL.migratedMark,'1');}catch(_){}}
+  return true;
+}
+// IndexedDB が使えない端末：従来の localStorage で動かす
+function loadLS(){
+  LOCAL.backend='ls';netState='local';
+  const d=loadLocalLS();
+  if(d&&d.__broken){
+    // ★退避用のコピーを書けて、読み戻して一致したときだけ見本で上書きする（容量不足で退避できないのに上書きして元データを消す事故を防ぐ）
+    let kept=false;try{localStorage.setItem(LOCAL.key+'_broken',d.raw);kept=localStorage.getItem(LOCAL.key+'_broken')===d.raw;}catch(_){}
+    holdVault();
+    if(!kept){storageProblem='端末内の保存データが壊れていて、退避用のコピーも作れませんでした。元のデータを守るため、この端末への保存を止めています（見本データで表示中・入力は保存されません）。院長に連絡してください。';
+      netState='memory';LOCAL.backend=null;try{alert('⚠ '+storageProblem);}catch(_){}return;}
+    brokenAlert();lsPersistAll();
+    try{if(!localStorage.getItem(VAULT_HOLD_KEY))localStorage.setItem(VAULT_HOLD_KEY,'1');}catch(_){} // 見本で置き換えて空きができた後にもう一度
+    return;}
+  if(d)applyLoaded(d); // 保存済みデータを復元。無ければサンプルのまま（初回）＝バックアップ画面の「全データ初期化」でまっさらにできる
+  else lsPersistAll();  // 初回はサンプル込みで保存を確立
+}
+
+// ── 保存容量の見える化（Safari の localStorage は1字2バイトで数える。IndexedDB はブラウザの見積もり） ──
+const LS_QUOTA=5*1024*1024;
+let storageInfo=null,storageInfoTimer=null;
+function lsOriginBytes(){let n=0;try{for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);const v=localStorage.getItem(k)||'';n+=(k.length+v.length)*2;}}catch(_){}return n;}
+async function refreshStorageInfo(){
+  const r={lsBytes:lsOriginBytes(),usage:null,quota:null,persisted:null};
+  try{if(navigator.storage&&navigator.storage.estimate){const e=await navigator.storage.estimate();r.usage=e.usage;r.quota=e.quota;}}catch(_){}
+  try{if(navigator.storage&&navigator.storage.persisted)r.persisted=await navigator.storage.persisted();}catch(_){}
+  storageInfo=r;return r;}
+function scheduleStorageInfo(){clearTimeout(storageInfoTimer);storageInfoTimer=setTimeout(()=>{refreshStorageInfo().catch(()=>{});},1500);}
+// 使用率（0〜1）。不明なら null
+function storageLevel(){
+  if(!storageInfo)return null;
+  if(LOCAL.backend==='idb')return (storageInfo.quota>0&&storageInfo.usage!=null)?storageInfo.usage/storageInfo.quota:null;
+  if(LOCAL.backend==='ls')return storageInfo.lsBytes/LS_QUOTA;
+  return null;}
+const fmtBytes=b=>b==null?'—':b<1024*1024?(b/1024).toFixed(1)+' KB':b<1024*1024*1024?(b/1024/1024).toFixed(1)+' MB':(b/1024/1024/1024).toFixed(2)+' GB';
+function storageBannerHTML(){
+  if(storageProblem)return `<div class="banner" style="margin-top:14px;background:#fee2e2;border-color:#fca5a5;color:#991b1b;font-weight:600">⚠ ${esc(storageProblem)}</div>`;
+  const lv=storageLevel();if(lv==null||lv<0.7)return '';
+  const red=lv>=0.85;
+  return `<div class="banner" style="margin-top:14px;background:${red?'#fee2e2':'#fef3c7'};border-color:${red?'#fca5a5':'#fcd34d'};color:${red?'#991b1b':'#92400e'};font-weight:600">⚠ 端末の保存容量が ${Math.round(lv*100)}% に達しています。${red?'まもなく保存できなくなります。':''}今すぐ「💾 バックアップ」でJSONを書き出してください。</div>`;}
+
+// 保存に失敗したことを、閉じるまで消えない帯で知らせる
+const SAVE_FAIL_MSG='保存できませんでした。入力は画面に残っています。「💾 バックアップ」でJSONを書き出してから、端末の空き容量を確認してください。';
+function showErr(msg){try{let b=document.getElementById('errbar');if(!b){b=document.createElement('div');b.id='errbar';document.body.appendChild(b);}
+  b.innerHTML=`<div role="alert" style="position:fixed;left:12px;right:12px;bottom:12px;z-index:9999;background:#b91c1c;color:#fff;border-radius:14px;padding:14px 52px 14px 16px;font-size:.9rem;font-weight:700;line-height:1.5;box-shadow:0 6px 20px rgba(0,0,0,.25)">⚠ ${esc(msg)}<button onclick="this.parentNode.remove()" aria-label="閉じる" style="position:absolute;right:8px;top:8px;border:none;background:rgba(255,255,255,.22);color:#fff;border-radius:10px;width:40px;height:40px;font-size:1.1rem;cursor:pointer">×</button></div>`;}catch(_){}}
+
 function pbUrl(col,id){return PB.url+'/api/collections/'+encodeURIComponent(col)+'/records'+(id?'/'+encodeURIComponent(id):'');}
 function mapPatientToPB(p){return {id:p.id,no:p.no,chartNo:p.chartNo||'',sei:p.sei||'',mei:p.mei||'',seiKana:p.seiKana||'',meiKana:p.meiKana||'',name:p.name||'',kana:p.kana||'',birth:p.birth||'',gender:p.gender||'',notes:p.notes||'',recNo:p.recNo||''};}
 function mapPatientFromPB(r){return {id:r.id,no:r.no,chartNo:r.chartNo,sei:r.sei,mei:r.mei,seiKana:r.seiKana,meiKana:r.meiKana,name:r.name,kana:r.kana,birth:r.birth,gender:r.gender,notes:r.notes,recNo:r.recNo};}
@@ -876,6 +1017,7 @@ function pbWrite(col,obj,isNew,mapFn){
     .then(r=>{if(!r.ok)throw new Error(col+' '+r.status);})
     .catch(()=>{obj._unsynced=true;netState='offline';toast('⚠ サーバー未同期（後で再送が必要）');});
 }
+// 保存系はすべて Promise<boolean>。新規の追加は失敗したら画面の一覧からも取り除く（更新の巻き戻しは呼び出し側）
 const db={
   connected:()=>!!PB.url,
   async load(){
@@ -886,31 +1028,70 @@ const db={
       catch(e){netState='offline';toast('⚠ サーバーに接続できません。メモリ表示中');}
       return;
     }
-    if(LOCAL.on&&localAvail()){
-      netState='local';
-      const d=loadLocal();
-      if(d&&d.__broken){ // 壊れた保存データ→退避済み。上書きせず警告してサンプルで起動
-        vaultHold=VAULT_HOLD_MSG;try{localStorage.setItem(VAULT_HOLD_KEY,'1');}catch(_){} // 読み直しても停止が続くよう端末に記録
-        try{alert('⚠ 端末内の保存データが壊れていたため読み込めませんでした。\n壊れたデータは端末内に退避してあります（消えていません）。\nバックアップJSONをお持ちなら「💾 バックアップ」画面から復元してください。');}catch(_){}
-        persistLocal();
-        // 保存領域がいっぱいで印を書けなかった場合に備え、見本で置き換えて空きができた後にもう一度書く
-        try{if(!localStorage.getItem(VAULT_HOLD_KEY))localStorage.setItem(VAULT_HOLD_KEY,'1');}catch(_){}
-      }
-      else if(d)applyLoaded(d); // 保存済みデータを復元。無ければサンプルのまま（初回）＝バックアップ画面の「全データ初期化」でまっさらにできる
-      else persistLocal();  // 初回はサンプル込みで保存を確立
-      return;
+    if(LOCAL.on){
+      if(await loadIDB())return;
+      if(localAvail()){loadLS();return;}
     }
     netState='memory';
   },
-  savePatient(p,isNew){if(isNew)store.patients.push(p);if(this.connected())pbWrite('patients',p,isNew,mapPatientToPB);return persistLocal();},
-  saveExam(e,isNew){if(isNew)store.exams.push(e);if(this.connected())pbWrite('exams',e,isNew,mapExamToPB);return persistLocal();},
-  deleteExam(id){store.exams=store.exams.filter(e=>e.id!==id);if(this.connected())fetch(pbUrl('exams',id),{method:'DELETE'}).catch(()=>{});persistLocal();},
-  saveDoc(d,isNew){if(isNew)store.docs.push(d);if(this.connected())pbWrite('docs',d,isNew,mapDocToPB);return persistLocal();},
-  deleteDoc(id){store.docs=store.docs.filter(d=>d.id!==id);if(this.connected())fetch(pbUrl('docs',id),{method:'DELETE'}).catch(()=>{});persistLocal();},
+  async savePatient(p,isNew){if(isNew)store.patients.push(p);if(this.connected())pbWrite('patients',p,isNew,mapPatientToPB);
+    const ok=await persistPut('patients',p);if(!ok&&isNew)store.patients=store.patients.filter(x=>x!==p);return ok;},
+  async savePatients(list){list.forEach(p=>{if(this.connected())pbWrite('patients',p,false,mapPatientToPB);});return persistPut('patients',list);},
+  async saveExam(e,isNew){if(isNew)store.exams.push(e);if(this.connected())pbWrite('exams',e,isNew,mapExamToPB);
+    const ok=await persistPut('exams',e);if(!ok&&isNew)store.exams=store.exams.filter(x=>x!==e);return ok;},
+  async deleteExam(id){const prev=store.exams;store.exams=prev.filter(e=>e.id!==id);
+    const ok=await persistDel('exams',id);if(!ok){store.exams=prev;return false;}
+    if(this.connected())fetch(pbUrl('exams',id),{method:'DELETE'}).catch(()=>{});return true;},
+  async saveDoc(d,isNew){if(isNew)store.docs.push(d);if(this.connected())pbWrite('docs',d,isNew,mapDocToPB);
+    const ok=await persistPut('docs',d);if(!ok&&isNew)store.docs=store.docs.filter(x=>x!==d);return ok;},
+  async deleteDoc(id){const prev=store.docs;store.docs=prev.filter(d=>d.id!==id);
+    const ok=await persistDel('docs',id);if(!ok){store.docs=prev;return false;}
+    if(this.connected())fetch(pbUrl('docs',id),{method:'DELETE'}).catch(()=>{});return true;},
+  saveMeta(){return persistMeta();},
 };
 
+// ── 入力途中の下書き（検査・文書）。保存を押す前に Safari が落ちても、開き直して続きから再開できる ──
+// iPad の Safari では「ページを離れる前の警告（beforeunload）」が働かないため、入力のたびに自動で書いておく。
+const DRAFT_KEY={exam:'draft_exam',doc:'draft_doc'};
+let drafts={exam:null,doc:null},draftTimer={};
+async function draftWrite(kind,obj){
+  if(netState!=='local')return false;
+  if(LOCAL.backend==='idb')return idbTx(['kv'],tx=>{const kv=tx.objectStore('kv');if(obj)kv.put(obj,DRAFT_KEY[kind]);else kv.delete(DRAFT_KEY[kind]);});
+  try{const k='perio_'+DRAFT_KEY[kind];if(obj)localStorage.setItem(k,JSON.stringify(obj));else localStorage.removeItem(k);return true;}catch(_){return false;}}
+async function draftReadAll(){
+  const out={exam:null,doc:null};if(netState!=='local')return out;
+  for(const kind of ['exam','doc']){
+    try{if(LOCAL.backend==='idb'){out[kind]=(await idbReq(idbConn.transaction(['kv'],'readonly').objectStore('kv').get(DRAFT_KEY[kind])))||null;
+        const lk='perio_'+DRAFT_KEY[kind];let old=null;try{const raw=localStorage.getItem(lk);old=raw?JSON.parse(raw):null;}catch(_){}
+        if(old&&(!out[kind]||String(old.at)>String(out[kind].at))){if(await draftWrite(kind,old)){out[kind]=old;try{localStorage.removeItem(lk);}catch(_){}}}
+        else if(old){try{localStorage.removeItem(lk);}catch(_){}}}
+      else{const raw=localStorage.getItem('perio_'+DRAFT_KEY[kind]);out[kind]=raw?JSON.parse(raw):null;}}catch(_){out[kind]=null;}}
+  // 患者がいない・形が合わない下書きは使わない
+  if(out.exam&&!(out.exam.teeth&&store.getPatient(out.exam.pid)))out.exam=null;
+  if(out.doc&&!(out.doc.data&&store.getPatient(out.doc.pid)))out.doc=null;
+  return out;}
+function examDraftObj(){return (pe&&pe.dirty)?{v:1,pid:pe.pid,examId:pe.examId||null,type:pe.type,date:pe.date,examiner:pe.examiner,teeth:clone(pe.teeth),at:new Date().toISOString()}:null;}
+function docDraftObj(){return (dc&&dc.dirty)?{v:1,pid:dc.pid,docId:dc.docId||null,kind:dc.kind,data:clone(dc.data),copy:dc.copy,at:new Date().toISOString()}:null;}
+function flushDraft(kind){clearTimeout(draftTimer[kind]);const o=kind==='exam'?examDraftObj():docDraftObj();if(!o)return;drafts[kind]=o;draftWrite(kind,o);}
+function scheduleDraft(kind){clearTimeout(draftTimer[kind]);draftTimer[kind]=setTimeout(()=>flushDraft(kind),600);}
+function clearDraft(kind){clearTimeout(draftTimer[kind]);drafts[kind]=null;draftWrite(kind,null).then(ok=>{if(!ok)setTimeout(()=>{if(!drafts[kind])draftWrite(kind,null);},1000);});}
+function draftSummary(kind){const d=drafts[kind];if(!d)return '';const p=store.getPatient(d.pid);
+  const at=new Date(d.at);const when=isNaN(at)?'':`${at.getMonth()+1}/${at.getDate()} ${pad2(at.getHours())}:${pad2(at.getMinutes())}`;
+  if(kind==='exam'){ // 前回値が最初から入っているので「前回（または保存済みの元の検査）から変えた歯」の数を出す
+    const base=d.examId?store.exams.find(e=>e.id===d.examId):store.patientExams(d.pid).find(e=>(e.type||'basic')===d.type);
+    let n=0;if(base)n=changedCount(d.teeth,base.teeth);else ORDER.forEach(k=>{const x=d.teeth[k];if(x&&(x.ppd!=null||(x.ppd6&&x.ppd6.some(v=>v!=null))))n++;});
+    return `${esc(p?p.name:'')}・${EXAM_LABEL[d.type]||'検査'}${d.examId?'（編集）':''}（${when}・${base?'変更':'入力'} ${n}歯）`;}
+  return `${esc(p?p.name:'')}・${DOC_KIND[d.kind]||'文書'}（${when}）`;}
+function draftBannerHTML(){
+  return ['exam','doc'].filter(k=>drafts[k]).map(k=>`<div class="banner" style="margin-top:14px;background:#eff6ff;border-color:#93c5fd;color:#1e3a8a">
+    <div style="font-weight:700">📝 保存されていない${k==='exam'?'検査':'文書'}があります</div>
+    <div style="font-size:.82rem;margin-top:2px">${draftSummary(k)}</div>
+    <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
+      <button class="btn-primary" style="width:auto;padding:10px 18px" onclick="APP.resumeDraft('${k}')">続きから再開</button>
+      <button style="padding:10px 18px;border:1px solid #93c5fd;border-radius:12px;background:#fff;color:#1e3a8a;font-weight:600;cursor:pointer" onclick="APP.discardDraft('${k}')">破棄する</button></div></div>`).join('');}
+
 // ───────── 院内保管庫（Mac mini への自動バックアップ） ─────────
-// 端末に保存するたびに（persistLocal）複製を Mac mini へ送る。端末内の保存・表示には影響しない。
+// 端末に保存するたびに（persistDone）複製を Mac mini へ送る。端末内の保存・表示には影響しない。
 // 合言葉・住所・iPadの名前は同じ配信元の院内アプリ共通（💾 バックアップ画面で設定）。正本=Ai/院内保管庫/
 // ★実データを読み込み終わってから作る（init の db.load の後）。セルフテストや読込前の見本データを送らないため。
 const VAULT_LABELS={patients:'患者',exams:'検査',docs:'文書'};
@@ -925,9 +1106,9 @@ function initVault(){vault=createVault({app:'perio',label:'歯周検査',appVers
   getSnapshot:()=>{if(vaultHold)throw new Error(vaultHold);const d=localPayload();delete d.savedAt;return {data:d,counts:{patients:store.patients.length,exams:store.exams.length,docs:store.docs.length}};},
   restore:async d=>{
     if(!d||!Array.isArray(d.patients)||!Array.isArray(d.exams))return {ok:false,message:'受け取ったデータの形式が違います'};
-    if(!applyLoadedAndSave(d))return {ok:false,message:'端末への保存に失敗しました（容量不足の可能性）。データは元のままです'};
-    // 置き換えに成功してから、編集中の画面・患者フォームの入力を捨てる（復元した内容を古い入力で上書きしないように）
-    if(pe&&pe.dirty)pe.dirty=false; if(dc&&dc.dirty)dc.dirty=false; pf=null;
+    if(!await applyLoadedAndSave(d))return {ok:false,message:'端末への保存に失敗しました（容量不足の可能性）。データは元のままです'};
+    // 置き換えに成功してから、編集中の画面・患者フォームの入力と下書きを捨てる（復元した内容を古い入力で上書きしないように）
+    if(pe&&pe.dirty)pe.dirty=false; if(dc&&dc.dirty)dc.dirty=false; pf=null; clearDraft('exam');clearDraft('doc');
     clearVaultHold();
     setTimeout(()=>{route={name:'home'};render();},1500);
     return {ok:true,message:`患者 ${store.patients.length}名・検査 ${store.exams.length}件・文書 ${store.docs.length}件を復元しました。まもなく患者一覧に戻ります。`};
@@ -937,9 +1118,16 @@ function mountVaultBadge(){try{vault.mountBadge(document.getElementById('vault-b
 // ───────── ルーター ─────────
 let route={name:'home'};
 const app=document.getElementById('app');
-function go(r){if(route.name==='perio'&&pe&&pe.dirty&&r.name!=='perio'){if(!confirm('保存されていない変更があります。破棄して移動しますか？'))return;}
-  if(route.name==='doc'&&dc&&dc.dirty&&r.name!=='doc'){if(!confirm('保存されていない文書があります。破棄して移動しますか？'))return;}
-  if(vc&&vc.active)vStop();route=r;render();window.scrollTo(0,0);}
+function go(r){if(route.name==='perio'&&pe&&pe.dirty&&r.name!=='perio'){if(!confirm('保存されていない変更があります。破棄して移動しますか？'))return;clearDraft('exam');}
+  if(route.name==='doc'&&dc&&dc.dirty&&r.name!=='doc'){if(!confirm('保存されていない文書があります。破棄して移動しますか？'))return;clearDraft('doc');}
+  if(vc&&vc.active)vStop();clearPrint();route=r;render();window.scrollTo(0,0);}
+// 印刷用の中身は時間では消さない（iPad の印刷画面は window.print() の後も開いたままのことがあり、先に消すと白紙になる）。
+// 次に画面を移るときと、次の印刷の直前に片づける。
+let printTitle=null;
+function clearPrint(){const a=document.getElementById('print-area');if(a)a.innerHTML='';if(printTitle!=null){document.title=printTitle;printTitle=null;}}
+function startPrint(html,title,pageCss){clearPrint();document.getElementById('pgstyle').textContent=pageCss;
+  document.getElementById('print-area').innerHTML=html;printTitle=document.title;document.title=title;window.print();}
+window.addEventListener('afterprint',()=>{if(printTitle!=null){document.title=printTitle;printTitle=null;}});
 function toast(msg){const warn=/^⚠/.test(msg);const t=document.getElementById('toast');t.innerHTML='<div class="toast"'+(warn?' style="background:#b45309"':'')+'>'+(warn?'':'✅ ')+esc(msg)+'</div>';setTimeout(()=>{t.innerHTML='';},warn?2800:1500);}
 function render(){
   if(route.name==='patientForm')return renderPatientForm(route.patientId);
@@ -965,6 +1153,7 @@ function renderHome(){
   app.innerHTML=`
     <header class="bar"><h1>歯周基本検査</h1><div class="sub">患者を選んで検査を開始　${netBadge()} <span id="vault-badge"></span></div></header>
     <div class="wrap">
+      ${storageBannerHTML()}${draftBannerHTML()}
       <div class="row" style="margin:18px 0 14px">
         <input id="q" class="ic" placeholder="氏名・フリガナ・番号で検索" value="${esc(homeQ)}"/>
         <button class="btn-primary" style="width:auto;padding:0 18px;white-space:nowrap" onclick="APP.newPatient()">＋ 新規</button>
@@ -981,7 +1170,7 @@ function renderHome(){
             <div class="pmeta"><span class="mono">${esc(p.no)}</span>${p.chartNo?' ・ カルテ'+esc(p.chartNo):''}${a!=null?' ・ '+a+'歳':''}</div></span>
           <span class="chev">›</span>
         </button>`;}).join('')}
-      <p class="note">${netState==='local'?'データはこの端末（このURL）内に自動保存されます。定期的にJSONバックアップを取ってください。':'※ データは保存されません（メモリのみ）。'}</p>
+      <p class="note">${netState==='local'?'データはこの端末（このURL）内に自動保存されます。定期的にJSONバックアップを取ってください。':'※ データは保存されません（メモリのみ）。'}${netState==='local'&&storageLevel()!=null?`　保存容量 ${Math.max(1,Math.round(storageLevel()*100))}% 使用`:''}</p>
       <p class="note" style="padding-top:4px">v${APP_VERSION}　<button class="linkbtn" style="font-size:.68rem" onclick="location.search='?selftest'">セルフテスト</button></p>
     </div>`;
   mountVaultBadge();
@@ -1082,9 +1271,21 @@ function renderPatientDetail(pid){
 }
 
 // ───────── バックアップ・データ管理（JSON書き出し/復元/初期化） ─────────
+function storageMeterHTML(){
+  const i=storageInfo;const lv=storageLevel();const pct=lv==null?null:Math.min(100,lv*100);
+  const where=LOCAL.backend==='idb'?'IndexedDB（大容量の保存場所）':LOCAL.backend==='ls'?'localStorage（上限5MB・同じ配信元の院内アプリと共有）':'なし（保存されません）';
+  const used=LOCAL.backend==='idb'?(i&&i.usage!=null?fmtBytes(i.usage)+' ／ 上限 約'+fmtBytes(i.quota):'計測中…')
+    :LOCAL.backend==='ls'?(i?fmtBytes(i.lsBytes)+' ／ 上限 5.0 MB':'計測中…'):'—';
+  const col=pct==null?'#94a3b8':pct>=85?'#dc2626':pct>=70?'#d97706':'#0f766e';
+  return `<h2 style="font-size:.9rem;font-weight:700;margin:0 0 8px">保存容量</h2>
+    <div style="font-size:.82rem;line-height:1.8">保存先：${where}<br>使用量：<b class="mono">${used}</b>${pct!=null?`（${pct<1?'1%未満':Math.round(pct)+'%'}）`:''}</div>
+    <div style="height:10px;border-radius:6px;background:#e5e7eb;margin:8px 0;overflow:hidden"><div style="height:100%;width:${pct==null?0:Math.max(1,pct)}%;background:${col}"></div></div>
+    <div style="font-size:.78rem;line-height:1.7">自動削除の対象外：${i&&i.persisted===true?'<b>はい</b>':i&&i.persisted===false?'<b style="color:var(--warn)">いいえ</b>（ホーム画面のアイコンから開くと、しばらく使わなくても消されにくくなります）':'不明'}</div>
+    <p style="font-size:.7rem;color:var(--soft);margin:6px 0 0">使用量は同じ配信元（院内アプリ共通）の合計です。70%で黄色、85%で赤の警告をホームに出します。</p>`;}
 function renderBackup(){
-  const d=loadLocal();const bytes=(()=>{try{return new Blob([JSON.stringify(localPayload())]).size;}catch(e){return 0;}})();
-  const kb=bytes?(bytes/1024).toFixed(1)+' KB':'—';
+  // この歯周検査アプリのデータ量（Safari の localStorage と同じく1字2バイトで数える）
+  const bytes=(()=>{try{return JSON.stringify(localPayload()).length*2;}catch(e){return 0;}})();
+  const kb=bytes?fmtBytes(bytes):'—';
   app.innerHTML=`
     <header class="bar"><button class="back" onclick="APP.go({name:'home'})">◀ 患者一覧</button><h1>バックアップ・データ管理</h1><div class="sub">${netBadge()} <span id="vault-badge"></span></div></header>
     <div class="wrap">
@@ -1095,9 +1296,11 @@ function renderBackup(){
           <span>文書 <b class="mono">${store.docs.length}</b></span><span>担当者 <b class="mono">${store.staff.length}</b></span>
           <span style="color:var(--soft)">サイズ <b class="mono">${kb}</b></span>
         </div>
-        ${netState==='local'?`<p style="font-size:.72rem;color:var(--soft);margin:10px 0 0">端末内 最終保存：${d&&d.savedAt?esc(d.savedAt.replace('T',' ').slice(0,16)):'（未保存）'}　※保存はこのURL（オリジン）単位です。URLが変わるとデータは引き継がれません。</p>`
+        ${netState==='local'?`<p style="font-size:.72rem;color:var(--soft);margin:10px 0 0">この起動での最終保存：${LOCAL.lastSavedAt?esc(new Date(LOCAL.lastSavedAt).toLocaleString('ja-JP').slice(0,-3)):'（まだ保存していません）'}　※保存はこのURL（オリジン）単位です。URLが変わるとデータは引き継がれません。</p>`
           :netState==='memory'?'<p style="font-size:.72rem;color:var(--bad);margin:10px 0 0">⚠ 現在メモリのみ：リロードで消えます。必ずJSON書き出しで退避してください。</p>':''}
+        ${storageBannerHTML()}
       </div>
+      <div class="card" style="padding:18px;margin-top:14px" id="storage-meter">${storageMeterHTML()}</div>
       <button class="btn-primary" style="margin-top:16px" onclick="APP.bkExport()">💾 JSONで書き出す（バックアップ）</button>
       <p style="font-size:.7rem;color:var(--soft);margin:6px 2px 0">iPadでは共有シートから「"ファイル"に保存」を選択。定期的に（毎診療日おすすめ）取ってください。</p>
       <button style="width:100%;padding:13px;border:1px solid var(--blue);border-radius:16px;background:#fff;color:var(--blue);font-weight:600;font-size:.9rem;cursor:pointer;margin-top:14px" onclick="APP.bkImportOpen()">📂 バックアップから復元（読み込み）</button>
@@ -1107,6 +1310,7 @@ function renderBackup(){
     </div>`;
   mountVaultBadge();
   try{if(vault)vault.mountSettings(document.getElementById('vault-mount'),VAULT_LABELS);}catch(_){}
+  refreshStorageInfo().then(()=>{const el=document.getElementById('storage-meter');if(el&&route.name==='backup')el.innerHTML=storageMeterHTML();}).catch(()=>{});
 }
 
 // ───────── 衛生士（担当者）登録 ─────────
@@ -1262,13 +1466,7 @@ function buildPrint(patient,ex){
     <div class="pfoot">出力日 ${ymdJP(ymdToday())}　・　歯周基本検査アプリ（本紙は診療録綴じ込み用）</div>`;
 }
 function printExam(patient,ex){
-  const area=document.getElementById('print-area');
-  document.getElementById('pgstyle').textContent='@media print{@page{size:A4 landscape;margin:10mm;}}';
-  area.innerHTML=buildPrint(patient,ex);
-  const old=document.title;
-  document.title='歯周検査_'+((patient?patient.name:'').replace(/\s/g,'')||'患者')+'_'+ex.date;
-  window.print();
-  setTimeout(()=>{document.title=old;area.innerHTML='';},800);
+  startPrint(buildPrint(patient,ex),'歯周検査_'+((patient?patient.name:'').replace(/\s/g,'')||'患者')+'_'+ex.date,'@media print{@page{size:A4 landscape;margin:10mm;}}');
 }
 
 // ───────── 文書（治療のお知らせ＝様式1初回/継続・口腔衛生管理＝様式3） ─────────
@@ -1357,7 +1555,7 @@ function docArchSVG(teeth,editable){
 // ── 文書編集画面 ──
 let dc=null; // {pid,docId,kind,data,copy,dirty}
 function refreshDocSave(){const b=document.getElementById('hdr-dsave');if(!b||!dc)return;
-  if(dc.dirty){b.textContent='● 保存';b.style.background='var(--blue)';}
+  if(dc.dirty){b.textContent='● 保存';b.style.background='var(--blue)';scheduleDraft('doc');}
   else{b.textContent='保存済';b.style.background='#94a3b8';}}
 function renderDoc(pid){
   const p=store.getPatient(pid);if(!p||!dc)return go({name:'home'});
@@ -1445,14 +1643,22 @@ function renderDoc(pid){
     <div class="wrap">${body}<div style="height:24px"></div></div>`;
   refreshDocSave();
 }
-function docSaveCore(){ // 戻り値false＝端末への保存失敗（dirty保持）
-  dc.data.date=dc.data.date||ymdToday();
-  let okSave=true;
-  if(dc.docId){const doc=store.docs.find(x=>x.id===dc.docId);if(doc){doc.kind=dc.kind;doc.date=dc.data.date;doc.data=clone(dc.data);okSave=db.saveDoc(doc,false)!==false;}}
-  else{const nd={id:generateId(),patientId:dc.pid,kind:dc.kind,date:dc.data.date,data:clone(dc.data)};
-    if(db.saveDoc(nd,true)===false){store.docs=store.docs.filter(x=>x.id!==nd.id);okSave=false;}else dc.docId=nd.id;}
-  if(!okSave){toast('⚠ 保存できませんでした。端末の空き容量を確認してください');refreshDocSave();return false;}
-  dc.dirty=false;refreshDocSave();return true;
+let docBusy=false;
+async function docSaveCore(){ // 戻り値false＝端末への保存失敗（画面の入力と dirty は残し、保存済みの文書は元の内容に戻す）
+  if(docBusy)return false;docBusy=true;
+  try{
+    dc.data.date=dc.data.date||ymdToday();
+    if(dc.docId){const doc=store.docs.find(x=>x.id===dc.docId);
+      if(doc){const bak={kind:doc.kind,date:doc.date,data:doc.data};
+        doc.kind=dc.kind;doc.date=dc.data.date;doc.data=clone(dc.data);
+        if(!await db.saveDoc(doc,false)){Object.assign(doc,bak);showErr(SAVE_FAIL_MSG);refreshDocSave();return false;}
+        dc.dirty=false;clearDraft('doc');refreshDocSave();return true;}
+      dc.docId=null; // 元の文書が見当たらない（復元などで消えた）→ 入力を捨てずに新しい文書として保存
+    }
+    const nd={id:generateId(),patientId:dc.pid,kind:dc.kind,date:dc.data.date,data:clone(dc.data)};
+    if(!await db.saveDoc(nd,true)){showErr(SAVE_FAIL_MSG);refreshDocSave();return false;}
+    dc.docId=nd.id;dc.dirty=false;clearDraft('doc');refreshDocSave();return true;
+  }finally{docBusy=false;}
 }
 // ── 文書の印刷（A4縦・お渡し用＋控） ──
 const dck=(on,l)=>`<span class="dck${on?' on':''}">${on?'☑':'□'}${esc(l)}</span>`;
@@ -1549,13 +1755,8 @@ function printDoc(){
   const p=store.getPatient(dc.pid);
   const doc={kind:dc.kind,data:dc.data};
   const build=dc.kind==='s3'?buildDocS3:buildDocS1;
-  const area=document.getElementById('print-area');
-  document.getElementById('pgstyle').textContent='@media print{@page{size:A4 portrait;margin:9mm;}}';
-  area.innerHTML=`<div class="dsheet">${build(p,doc,false)}</div>`+(dc.copy?`<div class="dsheet">${build(p,doc,true)}</div>`:'');
-  const old=document.title;
-  document.title=DOC_KIND[dc.kind]+'_'+((p.name||'').replace(/\s/g,''))+'_'+dc.data.date;
-  window.print();
-  setTimeout(()=>{document.title=old;area.innerHTML='';},800);
+  startPrint(`<div class="dsheet">${build(p,doc,false)}</div>`+(dc.copy?`<div class="dsheet">${build(p,doc,true)}</div>`:''),
+    DOC_KIND[dc.kind]+'_'+((p.name||'').replace(/\s/g,''))+'_'+dc.data.date,'@media print{@page{size:A4 portrait;margin:9mm;}}');
 }
 
 // ───────── レセコンCSV 一方向取り込み（患者番号キー・手動・依存ゼロ） ─────────
@@ -1610,11 +1811,15 @@ function processImport(rows){
   return{items,total:rows.length-1,
     counts:{new:items.filter(i=>i.status==='new').length,update:items.filter(i=>i.status==='update').length,same:items.filter(i=>i.status==='same').length}};
 }
-function applyImport(items){let added=0,updated=0;
+// まとめて1回で端末に保存。失敗したら追加・更新をすべて元に戻して null
+async function applyImport(items){const added=[],baks=[];
   items.forEach(it=>{
-    if(it.status==='new'){const np={id:generateId(),no:store.nextNo(),recNo:it.recNo,chartNo:'',sei:it.sei,mei:it.mei,seiKana:'',meiKana:'',name:it.name,kana:'',birth:it.birth,gender:'',notes:''};db.savePatient(np,true);added++;}
-    else if(it.status==='update'){const p=store.getPatient(it.exId);if(p){if(it.name){p.sei=it.sei;p.mei=it.mei;p.name=it.name;}if(it.birth)p.birth=it.birth;db.savePatient(p,false);updated++;}}});
-  return{added,updated};
+    if(it.status==='new'){const np={id:generateId(),no:store.nextNo(),recNo:it.recNo,chartNo:'',sei:it.sei,mei:it.mei,seiKana:'',meiKana:'',name:it.name,kana:'',birth:it.birth,gender:'',notes:''};store.patients.push(np);added.push(np);}
+    else if(it.status==='update'){const p=store.getPatient(it.exId);if(p){baks.push([p,{sei:p.sei,mei:p.mei,name:p.name,birth:p.birth}]);if(it.name){p.sei=it.sei;p.mei=it.mei;p.name=it.name;}if(it.birth)p.birth=it.birth;}}});
+  const changed=added.concat(baks.map(b=>b[0]));
+  if(changed.length&&!await db.savePatients(changed)){
+    store.patients=store.patients.filter(p=>added.indexOf(p)<0);baks.forEach(([p,b])=>Object.assign(p,b));return null;}
+  return{added:added.length,updated:baks.length};
 }
 let importData=null;
 function renderImport(){
@@ -1959,6 +2164,8 @@ function renderPerio(pid,examId,newType){
   else{teeth=freshTeeth();if(prevAny)ORDER.forEach(n=>{if(prevAny.teeth[n]&&prevAny.teeth[n].missing)teeth[n].missing=true;});}
   pe={pid,examId,type,readOnly,baseline:baseline?clone(baseline):null,baseDate,
       teeth,date:fixed?fixed.date:ymdToday(),examiner:fixed?(fixed.examiner||''):'',sel:null,site:0,auto:true,tapMode:null,bopPaint:'bop',mobPaint:1,patient,dirty:false,hist:[]};
+  // 下書きから再開（前回値・変更マークの基準は通常どおり。値だけ下書きに置き換え、未保存として扱う）
+  const dr=route.draft;if(dr){route.draft=null;pe.teeth=normalizeTeeth(dr.teeth);if(dr.date)pe.date=dr.date;pe.examiner=dr.examiner||'';pe.dirty=true;drafts.exam=dr;}
   const st=examStats(pe.teeth,type);const ch=changedCount(pe.teeth,pe.baseline);
   const title=fixed?(EXAM_LABEL[type]+'の編集'):EXAM_LABEL[type];
   app.innerHTML=`
@@ -2001,7 +2208,7 @@ function renderPerio(pid,examId,newType){
       <div class="card" id="editor" style="padding:20px;margin-top:14px"></div>
       ${isOnePoint(type)?'<div class="card" id="voice-panel" style="padding:14px 16px;margin-top:14px"></div>':'<p class="note" style="padding-top:8px">🎤 音声入力は一点法（基本・P混検）のみ対応（六点法は今後）</p>'}
       <button class="btn-primary" style="margin-top:16px" onclick="APP.peSave()">${fixed?'変更を保存する':'検査を保存する'}</button>
-      <button style="width:100%;padding:12px;border:1px solid var(--soft);border-radius:16px;background:#fff;color:#374151;font-weight:600;font-size:.9rem;cursor:pointer;margin-top:10px" onclick="APP.printExam()">🖨 印刷・PDF出力</button>
+      <button style="width:100%;padding:12px;border:1px solid var(--soft);border-radius:16px;background:#fff;color:#374151;font-weight:600;font-size:.9rem;cursor:pointer;margin-top:10px" onclick="APP.printExam()">🖨 保存して印刷・PDF出力</button>
       ${fixed?`<button class="linkbtn" style="display:block;margin:14px auto 0;color:var(--bad)" onclick="APP.peDelete()">🗑 この検査を削除</button>`:''}
     </div>`;
   buildArch('arch-u',UPPER);buildArch('arch-l',LOWER);
@@ -2012,7 +2219,7 @@ function renderPerio(pid,examId,newType){
 }
 // ヘッダ保存ボタンの表示を dirty に応じて更新
 function refreshSaveBtn(){const b=document.getElementById('hdr-save');if(!b||!pe)return;
-  if(pe.dirty){b.textContent='● 保存';b.style.background='var(--blue)';}
+  if(pe.dirty){b.textContent='● 保存';b.style.background='var(--blue)';scheduleDraft('exam');}
   else{b.textContent='保存';b.style.background='#94a3b8';}}
 // 欠損歯登録モード：歯式タップで欠損／解除（検査前にまとめて登録）
 function missBarHTML(){
@@ -2141,12 +2348,40 @@ function pushHist(){if(!pe)return;(pe.hist=pe.hist||[]).push(clone(pe.teeth));if
 function undoOne(){if(!pe||!pe.hist||!pe.hist.length)return false;pe.teeth=pe.hist.pop();if(pe.sel!=null&&!pe.teeth[pe.sel])pe.sel=null;return true;}
 function mut(fn){if(pe.readOnly)return;pushHist();fn();}
 function afterChange(n){pe.dirty=true;refreshSaveBtn();refreshTooth(n);updateStats();renderEditor();refreshMissBar();}
+// 検査を画面を移らずに保存。戻り値 false＝失敗（入力は画面に残す）／'updated'／'created'／'recreated'（元の検査が消えていた）／'unchanged'
+let saveBusy=false,clinicTimer=null;
+async function saveExamCore(){
+  if(saveBusy)return false;
+  const cur=pe; // 保存中に別の検査へ移っても、保存の結果は保存を始めた検査にだけ反映する
+  if(cur.examId&&!cur.dirty&&store.exams.some(e=>e.id===cur.examId))return 'unchanged';
+  saveBusy=true;
+  const sig=()=>JSON.stringify([cur.date,cur.examiner,cur.teeth]);const at=sig();
+  // 保存中に入力が続いたら、その分は未保存のまま残す（下書きも消さない）
+  const settle=()=>{if(sig()===at){cur.dirty=false;if(pe===cur)clearDraft('exam');}if(pe===cur)refreshSaveBtn();};
+  try{
+    let lost=false;
+    if(cur.examId){const ex=store.exams.find(e=>e.id===cur.examId);
+      if(ex){const bak={date:ex.date,examiner:ex.examiner,teeth:ex.teeth};
+        ex.date=cur.date;ex.examiner=cur.examiner;ex.teeth=clone(cur.teeth);
+        if(!await db.saveExam(ex,false)){Object.assign(ex,bak);showErr(SAVE_FAIL_MSG);return false;}
+        settle();return 'updated';}
+      lost=true; // 編集中に元の検査が消えていた（復元・別の画面での削除など）→ 入力を捨てずに新しい検査として残す
+    }
+    const ne={id:generateId(),patientId:cur.pid,date:cur.date,examiner:cur.examiner,type:cur.type,teeth:clone(cur.teeth)};
+    if(!await db.saveExam(ne,true)){showErr(SAVE_FAIL_MSG);return false;}
+    cur.examId=ne.id;settle();return lost?'recreated':'created';
+  }finally{saveBusy=false;}
+}
+// 前回の起動で保存されなかった下書きがあるとき、別の検査・文書を始めて黙って上書きしないよう確認する
+function draftGuard(kind){const d=drafts[kind];if(!d)return true;
+  if(!confirm('保存されていない'+(kind==='exam'?'検査':'文書')+'の下書きがあります：\n'+draftSummary(kind).replace(/<[^>]+>/g,'')+'\n\n下書きを破棄して新しく始めますか？（「キャンセル」で戻り、ホームの「続きから再開」から開けます）'))return false;
+  clearDraft(kind);return true;}
 
 // ───────── 公開API（inline onclick から呼ぶ） ─────────
 window.APP={
   go,newPatient:()=>go({name:'patientForm'}),openPatient:id=>go({name:'patientDetail',patientId:id}),
-  newExam:(pid,type)=>go({name:'perio',patientId:pid,examId:null,type:type||'basic'}),
-  openExam:(pid,eid)=>go({name:'perio',patientId:pid,examId:eid}),
+  newExam:(pid,type)=>{if(!draftGuard('exam'))return;go({name:'perio',patientId:pid,examId:null,type:type||'basic'});},
+  openExam:(pid,eid)=>{if(!draftGuard('exam'))return;go({name:'perio',patientId:pid,examId:eid});},
   openViz:pid=>go({name:'viz',patientId:pid}),
   openImport:()=>{const el=document.getElementById('csvfile');el.value='';el.click();},
   // バックアップ
@@ -2159,16 +2394,31 @@ window.APP={
     catch(e){toast('⚠ 書き出しに失敗しました');}
   },
   bkImportOpen:()=>{const el=document.getElementById('bkfile');el.value='';el.click();},
-  bkWipe:()=>{
+  bkWipe:async()=>{
     if(!confirm('全データ（患者・検査・文書・担当者）を削除して、まっさらな状態にします。よろしいですか？'))return;
     if(!confirm('本当に削除しますか？ この操作は取り消せません（必要なら先にJSON書き出しを）'))return;
+    const prev={patients:store.patients,exams:store.exams,docs:store.docs,staff:store.staff};
     store.patients=[];store.exams=[];store.docs=[];store.staff=[];
-    pf=null;clearVaultHold();wipeLocal();persistLocal();try{if(vault)vault.pushNow();}catch(_){} // 意図的な初期化なので空でも送る（過去の複製はMac miniに残る）
+    if(!await persistAll()){Object.assign(store,prev);showErr('初期化できませんでした（端末に書き込めません）。データは元のままです。');return;}
+    pf=null;clearVaultHold();clearDraft('exam');clearDraft('doc');try{if(vault)vault.pushNow();}catch(_){} // 意図的な初期化なので空でも送る（過去の複製はMac miniに残る）
     toast('全データを初期化しました');go({name:'home'});
   },
-  addStaff:()=>{const el=document.getElementById('staff-name');const nm=(el?el.value:'').trim();if(!nm)return;store.staff.push({id:generateId(),name:nm});persistLocal();renderStaff();},
-  delStaff:id=>{store.staff=store.staff.filter(s=>s.id!==id);persistLocal();renderStaff();},
-  confirmImport:()=>{const r=applyImport(importData.items);importData=null;toast(`取り込み完了：新規${r.added}・更新${r.updated}`);go({name:'home'});},
+  addStaff:async()=>{const el=document.getElementById('staff-name');const nm=(el?el.value:'').trim();if(!nm)return;
+    const s={id:generateId(),name:nm};store.staff.push(s);
+    if(!await db.saveMeta()){store.staff=store.staff.filter(x=>x!==s);showErr(SAVE_FAIL_MSG);}renderStaff();},
+  delStaff:async id=>{const prev=store.staff;store.staff=prev.filter(s=>s.id!==id);
+    if(!await db.saveMeta()){store.staff=prev;showErr(SAVE_FAIL_MSG);}renderStaff();},
+  confirmImport:async()=>{const r=await applyImport(importData.items);if(!r){showErr('取り込めませんでした（端末に保存できません）。患者一覧は元のままです。');return;}
+    importData=null;toast(`取り込み完了：新規${r.added}・更新${r.updated}`);go({name:'home'});},
+  // 下書き（保存されていない検査・文書）の再開／破棄
+  resumeDraft:kind=>{const d=drafts[kind];if(!d||!store.getPatient(d.pid)){clearDraft(kind);render();return;}
+    if(kind==='exam'){const exists=d.examId&&store.exams.some(e=>e.id===d.examId);
+      go({name:'perio',patientId:d.pid,examId:exists?d.examId:null,type:d.type,draft:d});
+      if(d.examId&&!exists)toast('元の検査が見つからないため、新しい検査として再開します');}
+    else{const exists=d.docId&&store.docs.some(x=>x.id===d.docId);
+      dc={pid:d.pid,docId:exists?d.docId:null,kind:d.kind,data:clone(d.data),copy:d.copy!==false,dirty:true};drafts.doc=d;
+      go({name:'doc',patientId:d.pid});}},
+  discardDraft:kind=>{if(!confirm('保存されていない'+(kind==='exam'?'検査':'文書')+'の入力を破棄します。よろしいですか？'))return;clearDraft(kind);render();},
   cancelImport:()=>{importData=null;go({name:'home'});},
   // patient form
   pfSet:(k,v)=>{pf[k]=v;},
@@ -2181,14 +2431,18 @@ window.APP={
     pf.birth=(y&&pf.bd.m&&pf.bd.d)?(y+'-'+pad2(pf.bd.m)+'-'+pad2(pf.bd.d)):'';
     renderPatientForm(pf._for==='new'?null:pf._for);
   },
-  pfSave:(pid)=>{
+  pfSave:async(pid)=>{
     pf.sei=document.getElementById('f-sei').value;pf.mei=document.getElementById('f-mei').value;
     pf.seiKana=document.getElementById('f-seik').value;pf.meiKana=document.getElementById('f-meik').value;
     const e={};if(!pf.sei.trim()||!pf.mei.trim())e.name='姓・名を入力してください';if(!pf.seiKana.trim()||!pf.meiKana.trim())e.kana='フリガナを入力してください';if(!pf.birth)e.birth='生年月日を入力してください';
     pf.errs=e;if(Object.keys(e).length){renderPatientForm(pid||null);return;}
     const payload={chartNo:pf.chartNo,sei:pf.sei.trim(),mei:pf.mei.trim(),seiKana:pf.seiKana.trim(),meiKana:pf.meiKana.trim(),gender:pf.gender,notes:pf.notes,birth:pf.birth,name:pf.sei.trim()+' '+pf.mei.trim(),kana:pf.seiKana.trim()+' '+pf.meiKana.trim()};
-    if(pid){const p=store.getPatient(pid);Object.assign(p,payload);db.savePatient(p,false);toast('患者情報を更新しました');pf=null;go({name:'patientDetail',patientId:pid});}
-    else{const np={id:generateId(),no:store.nextNo(),...payload};db.savePatient(np,true);toast('患者を登録しました');pf=null;go({name:'patientDetail',patientId:np.id});}
+    if(pid){const p=store.getPatient(pid);const bak=Object.assign({},p);Object.assign(p,payload);
+      if(!await db.savePatient(p,false)){Object.keys(p).forEach(k=>delete p[k]);Object.assign(p,bak);showErr(SAVE_FAIL_MSG);return;}
+      toast('患者情報を更新しました');pf=null;go({name:'patientDetail',patientId:pid});}
+    else{const np={id:generateId(),no:store.nextNo(),...payload};
+      if(!await db.savePatient(np,true)){showErr(SAVE_FAIL_MSG);return;}
+      toast('患者を登録しました');pf=null;go({name:'patientDetail',patientId:np.id});}
   },
   // perio
   peField:(k,v)=>{pe[k]=v;pe.dirty=true;refreshSaveBtn();},
@@ -2224,29 +2478,30 @@ window.APP={
     const n=VORDER[vi],old=pe.sel;pe.sel=n;pe.site=s;if(old!=null&&old!==n)refreshTooth(old);refreshTooth(n);renderEditor();
     const el=document.querySelectorAll('.tooth')[ORDER.indexOf(n)];if(el)el.scrollIntoView({inline:'center',block:'nearest',behavior:'smooth'});},
   autoNextSite:()=>{if(pe.site<5){pe.site++;renderEditor();}else APP.advanceSite(1);},
-  printExam:()=>{printExam(pe.patient,{teeth:pe.teeth,type:pe.type,date:pe.date,examiner:pe.examiner});},
+  // 検査の印刷は「保存してから印刷」（紙＝原本とアプリの記録を必ず一致させる。文書の印刷と同じ動き）
+  printExam:async()=>{const cur=pe;const r=await saveExamCore();if(!r||pe!==cur)return;if(r!=='unchanged')toast(r==='recreated'?'元の検査が見つからないため、新しい検査として保存しました':'保存しました');
+    printExam(pe.patient,{teeth:pe.teeth,type:pe.type,date:pe.date,examiner:pe.examiner});},
   // 音声入力
   vToggle:()=>{if(vc.active)vStop();else vStart();},
   vSetMode:m=>{vc.mode=m;vRefreshPanel();},
   vOptSound:()=>{vc.sound=!vc.sound;vRefreshPanel();},
   vOptEcho:()=>{vc.echo=!vc.echo;vRefreshPanel();},
   vRunText:()=>{const el=document.getElementById('v-text');if(!el||!el.value.trim())return;if(vc.cursor==null)vc.cursor=vFirstFrom(null);vHandle(el.value);const el2=document.getElementById('v-text');if(el2){el2.value='';el2.focus();}},
-  peSave:()=>{ // ★保存に失敗したら成功扱いにしない（dirtyを保持・画面に留まる）
-    if(pe.examId){const ex=store.exams.find(e=>e.id===pe.examId);
-      if(ex){ex.date=pe.date;ex.examiner=pe.examiner;ex.teeth=clone(pe.teeth);
-        if(db.saveExam(ex,false)===false){toast('⚠ 保存できませんでした。端末の空き容量を確認してください');return;}}
-      pe.dirty=false;toast('変更を保存しました');}
-    else{const ne={id:generateId(),patientId:pe.pid,date:pe.date,examiner:pe.examiner,type:pe.type,teeth:clone(pe.teeth)};
-      if(db.saveExam(ne,true)===false){store.exams=store.exams.filter(x=>x.id!==ne.id);toast('⚠ 保存できませんでした。端末の空き容量を確認してください');return;}
-      pe.dirty=false;pe.examId=ne.id;toast('検査を保存しました');}
-    go({name:'patientDetail',patientId:pe.pid});},
-  peDelete:()=>{if(confirm('この検査（'+ymdJP(pe.date)+'）を削除しますか？この操作は取り消せません。')){pe.dirty=false;db.deleteExam(pe.examId);toast('検査を削除しました');go({name:'patientDetail',patientId:pe.pid});}},
+  peSave:async()=>{ // ★保存に失敗したら成功扱いにしない（dirtyを保持・画面に留まる）
+    const cur=pe;const r=await saveExamCore();if(!r||pe!==cur)return;
+    toast(r==='updated'?'変更を保存しました':r==='recreated'?'元の検査が見つからないため、新しい検査として保存しました':r==='unchanged'?'保存済みです':'検査を保存しました');
+    if(cur.dirty){refreshSaveBtn();return;} // 保存中に入力が続いた分は未保存のまま画面に残す
+    go({name:'patientDetail',patientId:cur.pid});},
+  peDelete:async()=>{if(!confirm('この検査（'+ymdJP(pe.date)+'）を削除しますか？この操作は取り消せません。'))return;
+    if(!await db.deleteExam(pe.examId)){showErr('削除できませんでした（端末に書き込めません）。検査は残っています。');return;}
+    pe.dirty=false;clearDraft('exam');toast('検査を削除しました');go({name:'patientDetail',patientId:pe.pid});},
   // 文書（様式1・様式3）
   newDoc:(pid,kind)=>{
+    if(!draftGuard('doc'))return;
     if(kind==='s1'){const prior=store.patientDocs(pid).some(x=>x.kind==='s1i'||x.kind==='s1c');kind=prior?'s1c':'s1i';}
     dc={pid,docId:null,kind,data:newDocData(kind,pid),copy:true,dirty:true};
     go({name:'doc',patientId:pid});},
-  openDoc:(pid,id)=>{const doc=store.docs.find(x=>x.id===id);if(!doc)return;
+  openDoc:(pid,id)=>{const doc=store.docs.find(x=>x.id===id);if(!doc)return;if(!draftGuard('doc'))return;
     dc={pid,docId:id,kind:doc.kind,data:clone(doc.data),copy:true,dirty:false};
     go({name:'doc',patientId:pid});},
   docSet:(f,v)=>{dc.data[f]=v;dc.dirty=true;refreshDocSave();},
@@ -2261,11 +2516,18 @@ window.APP={
   docKind:k=>{if(dc.kind===k)return;dc.kind=k;dc.dirty=true;render();},
   docTooth:n=>{const cur=dc.data.teeth[n]||0;dc.data.teeth[n]=canBePrimary(n)?(cur+1)%3:(cur===0?1:0);dc.dirty=true;render();},
   docCopyTog:()=>{dc.copy=!dc.copy;render();},
-  docSave:()=>{if(!docSaveCore())return;toast('文書を保存しました');go({name:'patientDetail',patientId:dc.pid});},
-  docPrint:()=>{if(!docSaveCore())return;printDoc();render();},
-  docDelete:()=>{if(confirm('この文書（'+ymdJP(dc.data.date)+'）を削除しますか？この操作は取り消せません。')){dc.dirty=false;db.deleteDoc(dc.docId);toast('文書を削除しました');go({name:'patientDetail',patientId:dc.pid});}},
-  clinicSet:(k,v)=>{store.clinic[k]=v;persistLocal();},
+  docSave:async()=>{if(!await docSaveCore())return;toast('文書を保存しました');go({name:'patientDetail',patientId:dc.pid});},
+  docPrint:async()=>{if(!await docSaveCore())return;render();printDoc();}, // 画面を描き直してから印刷（印刷用の中身は次の画面移動まで残す）
+  docDelete:async()=>{if(!confirm('この文書（'+ymdJP(dc.data.date)+'）を削除しますか？この操作は取り消せません。'))return;
+    if(dc.docId&&!await db.deleteDoc(dc.docId)){showErr('削除できませんでした（端末に書き込めません）。文書は残っています。');return;}
+    dc.dirty=false;clearDraft('doc');toast('文書を削除しました');go({name:'patientDetail',patientId:dc.pid});},
+  // 医院情報は1文字ごとに呼ばれるので、打ち終わりを待ってまとめて保存する
+  clinicSet:(k,v)=>{store.clinic[k]=v;clearTimeout(clinicTimer);clinicTimer=setTimeout(async()=>{if(!await db.saveMeta())showErr(SAVE_FAIL_MSG);},700);},
 };
+// 保存を待つ操作は、処理中の2度押しを受け付けない（CSVの二重取り込み・患者の二重登録を防ぐ）
+let uiBusy=false;
+const onceAtATime=fn=>async(...a)=>{if(uiBusy)return;uiBusy=true;try{return await fn(...a);}finally{uiBusy=false;}};
+['confirmImport','pfSave','addStaff','delStaff','bkWipe','peDelete','docDelete'].forEach(k=>{APP[k]=onceAtATime(APP[k]);});
 // CSVファイル選択 → デコード → 解析 → プレビューへ
 document.getElementById('csvfile').addEventListener('change',e=>{
   const f=e.target.files&&e.target.files[0];if(!f)return;
@@ -2278,14 +2540,14 @@ document.getElementById('csvfile').addEventListener('change',e=>{
 document.getElementById('bkfile').addEventListener('change',e=>{
   const f=e.target.files&&e.target.files[0];if(!f)return;
   const reader=new FileReader();
-  reader.onload=()=>{
+  reader.onload=async()=>{
     try{
       const d=JSON.parse(reader.result);
       if(!d||!Array.isArray(d.patients)||!Array.isArray(d.exams))throw new Error('形式が違います');
       const when=d.savedAt?String(d.savedAt).replace('T',' ').slice(0,16):'不明';
       if(!confirm(`このバックアップで現在のデータを【すべて置き換え】ます。\n\n保存日時: ${when}\n患者 ${d.patients.length} / 検査 ${d.exams.length} / 文書 ${(d.docs||[]).length} / 担当者 ${(d.staff||[]).length}\n\nよろしいですか？`))return;
-      if(!applyLoadedAndSave(d)){toast('⚠ 端末への保存に失敗しました（容量不足の可能性）。データは元のままです');return;}
-      pf=null;if(pe)pe.dirty=false;if(dc)dc.dirty=false;clearVaultHold(); // 編集中の入力は捨てる・送信の停止を解除
+      if(!await applyLoadedAndSave(d)){showErr('端末への保存に失敗しました（容量不足の可能性）。データは元のままです。');return;}
+      pf=null;if(pe)pe.dirty=false;if(dc)dc.dirty=false;clearVaultHold();clearDraft('exam');clearDraft('doc'); // 編集中の入力と下書きは捨てる・送信の停止を解除
       try{if(vault)vault.pushNow();}catch(_){} // 意図した置き換えなので件数が減っても Mac mini に送る
       toast('バックアップから復元しました');go({name:'home'});
     }catch(err){toast('⚠ 復元に失敗：'+(err&&err.message||'不正なファイル'));}
@@ -2362,6 +2624,19 @@ function runSelfTest(){
   eq('csv 生年月日','1979-04-23',parseBirth('1979/04/23'));
   eq('csv 列検出',1,findCol(['予約年月日','患者番号','患者氏名'],['患者番号']));
   eq('csv クオート',[['a','b,c'],['1','2']],parseCSV('a,"b,c"\n1,2'));
+  // --- v0.11.0 保存容量・下書き・印刷（第1弾） ---
+  {const sb=LOCAL.backend,si=storageInfo,sp=storageProblem,dr=drafts;
+   LOCAL.backend='ls';storageProblem='';storageInfo={lsBytes:Math.round(LS_QUOTA*0.5)};
+   ok('容量 50%では警告しない',storageBannerHTML()==='');
+   storageInfo={lsBytes:Math.round(LS_QUOTA*0.75)};ok('容量 75%で黄色の警告',/75%/.test(storageBannerHTML())&&!/まもなく/.test(storageBannerHTML()));
+   storageInfo={lsBytes:Math.round(LS_QUOTA*0.9)};ok('容量 90%で赤の警告',/まもなく保存できなくなります/.test(storageBannerHTML()));
+   storageProblem='テスト';ok('保存停止中は赤帯を最優先',/テスト/.test(storageBannerHTML()));
+   const p0=store.patients[0];const base=store.patientExams(p0.id)[0];
+   if(base){const t=clone(base.teeth);const k=ORDER.find(n=>!t[n].missing);t[k].ppd=(t[k].ppd||0)+2;
+     drafts={exam:{v:1,pid:p0.id,examId:null,type:base.type||'basic',date:ymdToday(),examiner:'',teeth:t,at:'2026-09-25T01:02:00.000Z'},doc:null};
+     ok('下書きの案内は「前回から変えた歯」を数える',/変更 1歯/.test(draftSummary('exam')),draftSummary('exam'));}
+   LOCAL.backend=sb;storageInfo=si;storageProblem=sp;drafts=dr;}
+  ok('印刷用の中身を時間で消さない（iPadで白紙を防ぐ）',!/setTimeout/.test(String(printExam))&&!/setTimeout/.test(String(printDoc)));
   // --- 2026-09 Codexデバッグ由来の回帰チェック ---
   eq('norm 一つ戻す→取り消し','取り消し',vNorm('一つ戻す'));
   eq('parse 排膿なし=消す','none',P('排膿なし')[0].kind);
@@ -2403,6 +2678,10 @@ function runSelfTest(){
 }
 // 未保存の検査があるときはタブ/リロードで警告
 window.addEventListener('beforeunload',e=>{if((route.name==='perio'&&pe&&pe.dirty)||(route.name==='doc'&&dc&&dc.dirty)){e.preventDefault();e.returnValue='';}});
+// iPad では beforeunload が働かないので、アプリの切り替え・画面を閉じる瞬間に下書きを書き切る
+function flushDraftsNow(){if(route.name==='perio'&&pe&&pe.dirty)flushDraft('exam');if(route.name==='doc'&&dc&&dc.dirty)flushDraft('doc');}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')flushDraftsNow();});
+window.addEventListener('pagehide',flushDraftsNow);
 // 起動：PB接続→サーバー / 未接続→端末内保存(localStorage) / 不可→メモリ
 (async function init(){
   if(/selftest/.test(location.search)){runSelfTest();return;} // ?selftest で回帰チェックのみ実行
@@ -2410,6 +2689,8 @@ window.addEventListener('beforeunload',e=>{if((route.name==='perio'&&pe&&pe.dirt
   try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();}catch(e){} // 端末保存の永続化を要求（iOSの自動削除対策）
   await db.load();
   try{if(netState==='local')initVault();}catch(e){console.warn('院内保管庫の初期化に失敗',e);} // 端末内保存モードのときだけ
+  try{drafts=await draftReadAll();}catch(_){}
+  try{await refreshStorageInfo();}catch(_){}
   render();
 })();
 })();
