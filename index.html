@@ -161,6 +161,571 @@
   }
 </style>
 <style id="pgstyle">@media print{@page{size:A4 landscape;margin:10mm;}}</style>
+<script>
+/* VAULT-CLIENT:BEGIN v1 ─ 院内保管庫クライアント
+   正本: Ai/院内保管庫/client/vault-client.js（アプリ側は直接直さず tools/inline_vault_client.py で差し替える）
+
+   アプリのデータを「保存のたびに」院内の Mac mini（院内保管庫）へ複製する。
+   - アプリの保存は今までどおり端末内。ここは失敗してもアプリの動作を一切止めない（例外を外へ出さない）
+   - 合言葉・保管庫の住所・端末名は同じ配信元（github.io）の全アプリで共有（1台のiPadで1回入れればよい）
+   - 患者データは localStorage に書かない（書くのは設定と送信状態だけ）
+
+   使い方（各アプリ）:
+     const vault = createVault({
+       app: 'perio', label: '歯周検査', appVersion: APP_VERSION,
+       getSnapshot: () => ({ data: {...}, counts: {patients: 3, exams: 10} }),   // 同期/非同期どちらでも
+       listBlobIds: async () => [...],  getBlob: async id => 'data:image/jpeg;base64,...',   // 写真がある場合だけ
+       restore: async (data, blobs) => ({ ok: true, message: '復元しました' }),   // blobs = {ids, get(id)}
+     });
+     保存が終わるたびに → vault.markDirty()
+     同じIDの写真を差し替えたら → vault.forgetBlob(id)（次回その写真を送り直す）
+     設定画面に → vault.mountSettings(element)
+     見出しなどに → vault.mountBadge(element)
+*/
+(function (global) {
+  'use strict';
+  if (global.createVault) return;
+
+  var DEFAULT_URL = 'https://mini.hatadental.net:8443';
+  var CFG_KEY = 'vault.cfg';                       // {url, token, device}（全アプリ共通）
+  var DEBOUNCE_MS = 3000;
+  var SNAP_TIMEOUT_MS = 30000;
+  var BLOB_TIMEOUT_MS = 60000;
+  var HEARTBEAT_MS = 6 * 3600 * 1000;              // 変更がなくても6時間に1回は送る（重複はサーバーが捨てる）
+  var BLOB_VERIFY_MS = 24 * 3600 * 1000;           // 1日1回、サーバー側の写真一覧と突き合わせる
+  var TICK_MS = 30 * 60 * 1000;                    // 開いたままでも30分ごとに状態を確認
+
+  function lsGet(k, d) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } }
+  function now() { return Date.now(); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function fmtTime(t) {
+    if (!t) return '';
+    var d = new Date(t); if (isNaN(d)) return '';
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    var today = new Date(); var same = d.toDateString() === today.toDateString();
+    return (same ? '今日 ' : (d.getMonth() + 1) + '/' + d.getDate() + ' ') + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+  function sumCounts(c) { var n = 0; if (c) for (var k in c) if (typeof c[k] === 'number') n += c[k]; return n; }
+  function countsText(c, labels) {
+    if (!c) return '';
+    var out = [];
+    for (var k in c) out.push((labels && labels[k] || k) + ' ' + c[k]);
+    return out.join('・');
+  }
+  function randDevice() {
+    var a = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789', s = '';
+    for (var i = 0; i < 4; i++) s += a[Math.floor(Math.random() * a.length)];
+    return 'iPad-' + s;
+  }
+  var DEVICE_RE = /^[\w぀-ヿ㐀-鿿ｦ-ﾟ\-]{1,32}$/;
+
+  function getCfg() {
+    var c = lsGet(CFG_KEY, null);
+    if (!c || typeof c !== 'object') return null;
+    return c;
+  }
+  function isConfigured(c) { return !!(c && c.url && c.token && c.device); }
+  function urlProblem(u) {
+    if (!/^https?:\/\/[^\s/]+/.test(u || '')) return '住所の形式が違います（https:// から始めてください）';
+    var local = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(u);
+    if (/^http:/.test(u) && !local) return '鍵付き（https://）の住所が必要です';
+    if (/^http:/.test(u) && location.protocol === 'https:' && !local) return 'この画面は https なので http の住所には送れません';
+    return '';
+  }
+
+  // 返事の本文を読み終わるまでを時間切れの対象にする（本文の途中で止まっても先へ進めるように）
+  function withTimeout(ms) {
+    var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var rejectFn = null;
+    var timeout = new Promise(function (_, rej) { rejectFn = rej; });
+    var timer = setTimeout(function () {
+      try { if (ctl) ctl.abort(); } catch (e) {}
+      var e = new Error('Mac mini からの返事が途中で止まりました（時間切れ）'); e.kind = 'net'; rejectFn(e);
+    }, ms);
+    return {
+      signal: ctl ? ctl.signal : undefined,
+      race: function (p) {
+        return Promise.race([p, timeout]).then(function (v) { clearTimeout(timer); return v; },
+          function (e) { clearTimeout(timer); throw e; });
+      }
+    };
+  }
+
+  function api(cfg, method, path, body, ms, rawText) {
+    var t = withTimeout(ms || SNAP_TIMEOUT_MS);
+    var headers = { 'Authorization': 'Bearer ' + cfg.token };
+    var payload;
+    if (body !== undefined) {
+      if (typeof body === 'string') { payload = body; headers['Content-Type'] = 'text/plain;charset=utf-8'; }
+      else { payload = JSON.stringify(body); headers['Content-Type'] = 'application/json'; }
+    }
+    return t.race(fetch(cfg.url.replace(/\/+$/, '') + path, {
+      method: method, headers: headers, body: payload, signal: t.signal, cache: 'no-store', mode: 'cors', credentials: 'omit'
+    }).then(function (r) {
+      if (r.status === 401) { var e1 = new Error('合言葉が違います'); e1.kind = 'auth'; throw e1; }
+      if (r.status === 429) { var e2 = new Error('合言葉の間違いが続いたため一時停止中です（10分後に再試行）'); e2.kind = 'auth'; throw e2; }
+      if (!r.ok) {
+        return r.text().then(function (tx) {
+          var msg = 'Mac mini がエラーを返しました（' + r.status + '）';
+          try { var j = JSON.parse(tx); if (j && j.error) msg = j.error; } catch (e) {}
+          var e3 = new Error(msg); e3.kind = 'server'; throw e3;
+        });
+      }
+      return rawText ? r.text() : r.json();
+    }, function (err) {
+      var e4 = new Error('Mac mini に接続できません（院内Wi-Fi・Mac miniの電源を確認）'); e4.kind = 'net'; e4.cause = err; throw e4;
+    }));
+  }
+
+  var STYLE_ID = 'vlt-style';
+  var CSS = '' +
+    '.vlt{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans",sans-serif;color:#1e2a35;background:#fff;border:1px solid #d9e2ec;border-radius:14px;padding:16px;margin:14px 0;line-height:1.55;text-align:left}' +
+    '.vlt h3{font-size:1.02rem;margin:0 0 6px;display:flex;align-items:center;gap:6px}' +
+    '.vlt p{margin:6px 0;font-size:.86rem}' +
+    '.vlt .vlt-sub{color:#5b6b7b;font-size:.8rem}' +
+    '.vlt label{display:block;font-size:.8rem;color:#5b6b7b;margin:10px 0 3px}' +
+    '.vlt input{width:100%;box-sizing:border-box;font-size:16px;padding:10px 12px;border:1px solid #c5d0db;border-radius:10px;background:#fff;color:#1e2a35}' +
+    '.vlt .vlt-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}' +
+    '.vlt button{font-size:.9rem;padding:10px 14px;border-radius:10px;border:1px solid #c5d0db;background:#f4f7fa;color:#1e2a35;cursor:pointer;min-height:44px}' +
+    '.vlt button.vlt-pri{background:#1d6fb8;border-color:#1d6fb8;color:#fff;font-weight:600}' +
+    '.vlt button.vlt-warn{background:#fff7ed;border-color:#f0b37e;color:#9a4a07}' +
+    '.vlt button:disabled{opacity:.5}' +
+    '.vlt .vlt-st{display:inline-flex;align-items:center;gap:6px;font-size:.84rem;padding:6px 10px;border-radius:999px;background:#f1f5f9}' +
+    '.vlt .vlt-dot{width:9px;height:9px;border-radius:50%;display:inline-block}' +
+    '.vlt .vlt-msg{margin-top:10px;font-size:.84rem;padding:8px 10px;border-radius:10px;display:none}' +
+    '.vlt .vlt-msg.ok{display:block;background:#ecfdf3;color:#166534}' +
+    '.vlt .vlt-msg.ng{display:block;background:#fef2f2;color:#991b1b}' +
+    '.vlt .vlt-msg.info{display:block;background:#eff6ff;color:#1e40af}' +
+    '.vlt .vlt-dev{border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;margin-top:8px}' +
+    '.vlt .vlt-dev b{font-size:.92rem}' +
+    '.vlt select{width:100%;font-size:15px;padding:8px;border-radius:10px;border:1px solid #c5d0db;margin-top:6px;background:#fff;color:#1e2a35}' +
+    '.vlt details{margin-top:12px}.vlt summary{cursor:pointer;font-size:.86rem;color:#1d6fb8}' +
+    '.vlt-badge{display:inline-flex;align-items:center;gap:4px;font-size:.7rem;line-height:1;padding:3px 7px;border-radius:999px;background:rgba(255,255,255,.85);color:#334155;border:1px solid rgba(0,0,0,.08);white-space:nowrap;vertical-align:middle}' +
+    '.vlt-badge i{width:7px;height:7px;border-radius:50%;display:inline-block}';
+  function injectStyle() {
+    if (document.getElementById(STYLE_ID)) return;
+    var s = document.createElement('style'); s.id = STYLE_ID; s.textContent = CSS;
+    (document.head || document.documentElement).appendChild(s);
+  }
+
+  var STATE_VIEW = {
+    off: ['#94a3b8', 'Mac mini への保管は未設定'],
+    ok: ['#16a34a', 'Mac mini に保管済み'],
+    pending: ['#d97706', 'Mac mini へ送る準備中'],
+    sending: ['#2563eb', 'Mac mini へ送信中…'],
+    error: ['#dc2626', 'Mac mini に届いていません'],
+    auth: ['#dc2626', '合言葉が違います'],
+    guard: ['#dc2626', 'データが空のため送信を止めています']
+  };
+
+  function createVault(opt) {
+    var app = opt.app;
+    var SKEY = 'vault.' + app + '.state';
+    var st = lsGet(SKEY, null) || {};
+    if (!Array.isArray(st.sentBlobs)) st.sentBlobs = [];
+    if (typeof st.gen !== 'number') st.gen = 0;
+    var sentSet = {}; st.sentBlobs.forEach(function (id) { sentSet[id] = 1; });
+    if (st.lastOkAt && !st.okDev) { var c0 = getCfg(); if (c0 && c0.device) st.okDev = c0.device; }   // 以前の版から更新した端末
+    var blobGen = {};                 // 写真ごとの差し替え回数（送信中に差し替わったら送り直す）
+    var listeners = [];
+    var timer = null, inflight = null, again = false, retryMs = 0;
+    var restoring = false;            // 復元中は自動送信しない
+    var authFailedToken = null;       // この合言葉で断られた → 合言葉が変わるまで自動では送らない
+    var live = { state: 'off', lastError: '' };
+
+    function copy(o) { try { return JSON.parse(JSON.stringify(o || {})); } catch (e) { return {}; } }
+    function saveState() { st.sentBlobs = Object.keys(sentSet); lsSet(SKEY, st); }
+    function setLive(s, err) {
+      live.state = s; live.lastError = err || '';
+      // 画面から外れた部品の見張りは捨てる（描き直すたびに増え続けないように）
+      listeners = listeners.filter(function (l) { return !l.el || l.el.isConnected !== false; });
+      listeners.forEach(function (l) { try { l.fn(status()); } catch (e) {} });
+    }
+    function status() {
+      var c = getCfg();
+      var s = isConfigured(c) ? live.state : 'off';
+      if (isConfigured(c) && s === 'off') s = st.pending ? 'pending' : (st.lastOkAt ? 'ok' : 'pending');
+      return { state: s, lastOkAt: st.lastOkAt || null, lastError: live.lastError, pending: !!st.pending,
+        device: c && c.device, url: c && c.url, lastCounts: st.lastCounts || null, blobsSent: Object.keys(sentSet).length };
+    }
+    function onStatus(fn, el) {
+      var l = { fn: fn, el: el || null };
+      listeners.push(l);
+      return function () { listeners = listeners.filter(function (x) { return x !== l; }); };
+    }
+    function authBlocked() { var c = getCfg(); return !!(authFailedToken && c && c.token === authFailedToken); }
+
+    function schedule(ms) {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(function () { timer = null; pushNow('auto'); }, ms);
+    }
+    function markDirty() {
+      try {
+        st.gen += 1; st.pending = true; if (!st.pendingSince) st.pendingSince = now(); saveState();
+        if (!isConfigured(getCfg()) || authBlocked() || restoring) return;
+        retryMs = 0;
+        setLive('pending');
+        schedule(DEBOUNCE_MS);
+      } catch (e) {}
+    }
+
+    function snapshot() {
+      return Promise.resolve().then(function () { return opt.getSnapshot(); }).then(function (s) {
+        if (!s || s.data == null) throw new Error('データを読み取れませんでした');
+        return { data: s.data, counts: s.counts ? copy(s.counts) : null };   // 件数は写しを使う（アプリ側で書き換えられても影響しない）
+      });
+    }
+    function putSnap(cfg, s, reason) {
+      return api(cfg, 'PUT', '/v1/' + app + '/snap/' + encodeURIComponent(cfg.device), {
+        data: s.data, counts: s.counts || {}, appVersion: String(opt.appVersion || ''),
+        reason: reason, clientAt: new Date().toISOString()
+      }, SNAP_TIMEOUT_MS);
+    }
+
+    // この端末（この名前）から初めて送るとき：同じ名前の保管データが Mac mini にあれば自動では上書きしない
+    // （iPad を入れ替えて同じ名前を付けた直後に、見本データや空のデータが「最新」になるのを防ぐ）
+    function firstPushCheck(cfg, reason) {
+      if (reason !== 'auto' || st.intended || st.okDev === cfg.device) return Promise.resolve();
+      return api(cfg, 'GET', '/v1/' + app + '/snaps', undefined, SNAP_TIMEOUT_MS).then(function (j) {
+        var nf = function (x) { try { return String(x).normalize('NFC'); } catch (e) { return String(x); } };
+        var mine = (j.devices || []).filter(function (d) { return nf(d.device) === nf(cfg.device); })[0];
+        if (mine && mine.latest && sumCounts(mine.latest.counts) > 0) {
+          var g = new Error('「' + cfg.device + '」の名前で Mac mini に保管されたデータがあります（' + countsText(mine.latest.counts) +
+            (mine.latest.at ? '・' + fmtTime(mine.latest.at) : '') + '）。この端末から初めて送るので、上書きせずに止めています。前のデータを戻すなら「Mac mini から復元する」、この端末の内容で良ければ「今すぐ送る」を押してください。');
+          g.kind = 'guard'; throw g;
+        }
+      });
+    }
+
+    function pushNow(reason) {
+      var cfg = getCfg();
+      if (!isConfigured(cfg)) return Promise.resolve({ ok: false, skipped: 'unconfigured' });
+      if (restoring) return Promise.resolve({ ok: false, skipped: 'restoring' });
+      if (reason === 'auto' && authBlocked()) return Promise.resolve({ ok: false, kind: 'auth', error: live.lastError });
+      if (inflight) { again = true; return inflight; }
+      if (reason === 'manual' && !st.intended) { st.intended = true; saveState(); }   // 意図した送信：失敗→再試行でも安全装置を通さない
+      setLive('sending');
+      var gen = st.gen;
+      inflight = snapshot().then(function (s) {
+        return firstPushCheck(cfg, reason).then(function () { return s; });
+      }).then(function (s) {
+        var total = sumCounts(s.counts);
+        var prev = sumCounts(st.lastCounts);
+        // 端末のデータが空になった・急に半分以下に減った（消えた・壊れた・見本データで起動した）ときは、
+        // 黙って送らない。意図した削除なら設定画面の「今すぐ送る」で送れる。
+        if (reason === 'auto' && s.counts && !st.intended) {
+          var g = null;
+          if (total === 0 && prev > 0) {
+            g = new Error('この端末のデータが空になっています。Mac mini の保管分は上書きせず残しています。必要なら「Mac mini から復元」してください。');
+          } else if (prev >= 10 && total < prev * 0.5) {
+            g = new Error('件数が急に減ったため送信を止めています（前回 ' + prev + ' → 今回 ' + total + '）。意図した削除なら設定画面の「今すぐ送る」を押してください。');
+          }
+          if (g) { g.kind = 'guard'; throw g; }
+        }
+        return putSnap(cfg, s, reason === 'manual' ? 'manual' : 'auto').then(function (res) {
+          authFailedToken = null;
+          st.lastOkAt = now(); st.lastCounts = s.counts || {}; st.lastFile = res && res.file;
+          st.okDev = cfg.device; st.intended = false;
+          if (st.gen === gen) { st.pending = false; st.pendingSince = null; }   // 送信中に編集があれば未送信のまま
+          saveState();
+          return syncBlobs(cfg).then(function (b) { return { ok: true, dup: !!(res && res.dup), blobs: b }; });
+        });
+      }).then(function (r) {
+        retryMs = 0;
+        setLive(st.pending || st.blobsPending ? 'pending' : 'ok');
+        // 送信中に編集・写真の差し替えがあった → 間を置かずに続きを送る
+        if (st.pending || st.blobsPending) schedule(DEBOUNCE_MS);
+        return r;
+      }, function (err) {
+        var kind = (err && err.kind) || 'app';
+        if (kind === 'auth') authFailedToken = cfg.token;
+        setLive(kind === 'auth' ? 'auth' : kind === 'guard' ? 'guard' : 'error', err && err.message);
+        if (kind === 'net' || kind === 'server' || kind === 'app') {   // 合言葉違い・ガードは自動では打ち直さない
+          retryMs = Math.min(retryMs ? retryMs * 2 : 30000, 10 * 60000);
+          schedule(retryMs);
+        }
+        return { ok: false, error: err && err.message, kind: kind };
+      }).then(function (r) {
+        inflight = null;
+        if (again) {
+          again = false;
+          if (r.ok) schedule(1000);                  // 失敗時は上の再試行の予定を上書きしない
+        }
+        return r;
+      });
+      return inflight;
+    }
+
+    function syncBlobs(cfg) {
+      if (typeof opt.listBlobIds !== 'function' || typeof opt.getBlob !== 'function') return Promise.resolve({ sent: 0 });
+      // 端末名が変わったら（別のアプリの設定画面で変えた場合も）、新しい名前のフォルダへ送り直す
+      if (st.blobDev !== cfg.device) { sentSet = {}; st.blobDev = cfg.device; st.blobsVerifiedAt = 0; }
+      st.blobsPending = true; saveState();        // 最後まで送り切るまでは「写真未完了」
+      var dev = encodeURIComponent(cfg.device);
+      var verify = (!st.blobsVerifiedAt || now() - st.blobsVerifiedAt > BLOB_VERIFY_MS)
+        ? api(cfg, 'GET', '/v1/' + app + '/blobs/' + dev, undefined, SNAP_TIMEOUT_MS).then(function (j) {
+          var srv = {}; (j.ids || []).forEach(function (id) { srv[id] = 1; });
+          Object.keys(sentSet).forEach(function (id) { if (!srv[id]) delete sentSet[id]; });   // サーバーに無いものは送り直す
+          st.blobsVerifiedAt = now(); saveState();
+        })
+        : Promise.resolve();
+      var changed = false;
+      return verify.then(function () { return Promise.resolve(opt.listBlobIds()); }).then(function (ids) {
+        var todo = (ids || []).filter(function (id) { return !sentSet[id] && /^[A-Za-z0-9_\-][A-Za-z0-9_\-.]{0,127}$/.test(id); });
+        var sent = 0, i = 0;
+        function next() {
+          if (i >= todo.length) return { sent: sent };
+          var id = todo[i++];
+          var g = blobGen[id] || 0;
+          return Promise.resolve(opt.getBlob(id)).then(function (val) {
+            if (val == null) return next();          // 削除済みの写真など
+            var body = typeof val === 'string' ? val : JSON.stringify(val);
+            return api(cfg, 'PUT', '/v1/' + app + '/blob/' + dev + '/' + encodeURIComponent(id), body, BLOB_TIMEOUT_MS).then(function () {
+              if ((blobGen[id] || 0) === g) sentSet[id] = 1; else changed = true;   // 送信中に差し替わった → 次回送り直す
+              sent++;
+              if (sent % 5 === 0) saveState();
+              return next();
+            });
+          });
+        }
+        return next();
+      }).then(function (r) { st.blobsPending = changed; saveState(); return r; });
+    }
+
+    // ── 復元 ──
+    function listSnaps() {
+      var cfg = getCfg();
+      if (!isConfigured(cfg)) return Promise.reject(new Error('先に保管庫の設定をしてください'));
+      return api(cfg, 'GET', '/v1/' + app + '/snaps').then(function (j) { return j.devices || []; });
+    }
+    function waitIdle() { return inflight ? inflight.then(waitIdle, waitIdle) : Promise.resolve(); }
+    function restoreFrom(device, file, onProgress) {
+      var cfg = getCfg();
+      if (!isConfigured(cfg)) return Promise.reject(new Error('先に保管庫の設定をしてください'));
+      if (restoring) return Promise.reject(new Error('復元の処理中です'));
+      var dev = encodeURIComponent(device);
+      var prog = onProgress || function () {};
+      var target = file;
+      restoring = true;
+      if (timer) { clearTimeout(timer); timer = null; }
+      return Promise.resolve().then(function () {
+        // 「最新」は控えを送る前に具体的なファイル名にしておく（控え自身を戻さないように）
+        if (target && target !== 'latest') return;
+        return listSnaps().then(function (devs) {
+          var d = devs.filter(function (x) { return x.device === device; })[0];
+          if (!d || !d.latest) throw new Error('「' + device + '」の保管データが見つかりません');
+          target = d.latest.file;
+        });
+      }).then(waitIdle).then(function () {
+        prog('復元前の状態を Mac mini に控えています…');
+        // 控えは通常の送信と混ぜず、必ず専用に1回送る。送れなければ復元しない
+        return snapshot().then(function (s) {
+          return putSnap(cfg, s, 'pre-restore').catch(function (e) {
+            throw new Error('復元前の控えを Mac mini に保存できなかったため中止しました：' + e.message);
+          }).then(function () {
+            // まだ送っていない写真も先に控える（復元後の片付けで消えても Mac mini に残るように）
+            return syncBlobs(cfg).catch(function (e) {
+              throw new Error('復元前に、まだ送っていない写真を Mac mini に控えられなかったため中止しました：' + e.message);
+            });
+          });
+        }, function () {
+          prog('この端末のデータを読み取れないため、控えは取らずに復元します…');   // 守るべき中身が読めない＝復元が必要な状態
+        });
+      }).then(function () {
+        prog('Mac mini からデータを受け取っています…');
+        return api(cfg, 'GET', '/v1/' + app + '/snap/' + dev + '/' + encodeURIComponent(target), undefined, 120000);
+      }).then(function (env) {
+        if (!env || env.app !== app || env.data == null) throw new Error('受け取ったデータの形式が違います');
+        var blobIds = null;
+        var blobs = {
+          ids: function () {
+            if (blobIds) return Promise.resolve(blobIds);
+            return api(cfg, 'GET', '/v1/' + app + '/blobs/' + dev).then(function (j) { blobIds = j.ids || []; return blobIds; });
+          },
+          get: function (id) { return api(cfg, 'GET', '/v1/' + app + '/blob/' + dev + '/' + encodeURIComponent(id), undefined, BLOB_TIMEOUT_MS, true); }
+        };
+        prog('この端末に書き戻しています…');
+        return Promise.resolve(opt.restore(env.data, blobs, env)).then(function (res) {
+          res = res || { ok: true };
+          if (res.ok) {
+            // 復元した内容がこの端末の新しい基準。写真は中身が変わり得るので全部送り直す（同じ中身は Mac mini が捨てる）
+            st.lastCounts = copy(env.counts || st.lastCounts); sentSet = {}; st.blobsVerifiedAt = 0; saveState();
+          }
+          return res;
+        });
+      }).then(function (res) {
+        restoring = false;
+        if (res && res.ok) markDirty(); else if (st.pending) schedule(DEBOUNCE_MS);
+        return res;
+      }, function (e) {
+        restoring = false;
+        if (st.pending) schedule(DEBOUNCE_MS);
+        throw e;
+      });
+    }
+
+    // ── 画面部品 ──
+    function mountBadge(el) {
+      if (!el) return;
+      injectStyle();
+      function draw(s) {
+        if (s.state === 'off') { el.innerHTML = ''; return; }
+        var v = STATE_VIEW[s.state] || STATE_VIEW.pending;
+        var txt = s.state === 'ok' ? '保管 ' + fmtTime(s.lastOkAt) : v[1];
+        el.innerHTML = '<span class="vlt-badge" title="' + esc(v[1] + (s.lastError ? '：' + s.lastError : '')) + '"><i style="background:' + v[0] + '"></i>🖥 ' + esc(txt) + '</span>';
+      }
+      draw(status());
+      onStatus(draw, el);
+    }
+
+    function mountSettings(el, labels) {
+      if (!el) return;
+      injectStyle();
+      var c = getCfg() || {};
+      var box = document.createElement('div');
+      box.className = 'vlt';
+      box.innerHTML =
+        '<h3>🖥 Mac mini への自動バックアップ</h3>' +
+        '<p class="vlt-sub">保存するたびに、この端末のデータの複製を院内の Mac mini へ送ります。アプリの使い方は変わりません。合言葉は同じ iPad の他の院内アプリと共通です。</p>' +
+        '<div><span class="vlt-st" data-v="st"></span></div>' +
+        '<label>この iPad の名前（例：受付iPad・チェア1）</label><input data-v="device" maxlength="32" autocomplete="off" autocapitalize="off">' +
+        '<label>合言葉</label><input data-v="token" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">' +
+        '<details><summary>Mac mini の住所（通常は変更不要）</summary><label>住所</label><input data-v="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false"></details>' +
+        '<div class="vlt-row"><button class="vlt-pri" data-a="save">保存して接続を確認</button><button data-a="push">今すぐ送る</button></div>' +
+        '<div class="vlt-msg" data-v="msg"></div>' +
+        '<details data-v="rsbox"><summary>Mac mini から復元する（iPad の入れ替え・データが消えたとき）</summary>' +
+        '<p class="vlt-sub">Mac mini に保管されている複製で、この端末のデータを<b>置き換え</b>ます。置き換える前の状態も自動で Mac mini に控えます。</p>' +
+        '<div class="vlt-row"><button data-a="list">保管されている一覧を見る</button></div><div data-v="devs"></div></details>';
+      el.innerHTML = '';
+      el.appendChild(box);
+      var $ = function (k) { return box.querySelector('[data-v="' + k + '"]'); };
+      $('device').value = c.device || randDevice();
+      $('token').value = c.token || '';
+      $('url').value = c.url || DEFAULT_URL;
+      function msg(kind, text) { var m = $('msg'); m.className = 'vlt-msg ' + kind; m.textContent = text; }
+      function drawSt(s) {
+        var v = STATE_VIEW[s.state] || STATE_VIEW.pending;
+        var extra = s.state === 'ok' && s.lastOkAt ? '（' + fmtTime(s.lastOkAt) + '）' : (s.lastError && s.state !== 'ok' ? '：' + s.lastError : '');
+        $('st').innerHTML = '<i class="vlt-dot" style="background:' + v[0] + '"></i>' + esc(v[1] + extra);
+      }
+      drawSt(status());
+      onStatus(drawSt, box);
+
+      box.querySelector('[data-a="save"]').onclick = function () {
+        var dev = $('device').value.trim(), tok = $('token').value, url = $('url').value.trim().replace(/\/+$/, '');
+        if (!DEVICE_RE.test(dev)) return msg('ng', 'iPad の名前は32文字以内で、記号は「-」「_」だけ使えます');
+        if (tok.length < 8) return msg('ng', '合言葉を入れてください（8文字以上）');
+        var up = urlProblem(url); if (up) return msg('ng', up);
+        var old = getCfg() || {};
+        var next = { url: url, token: tok, device: dev, v: 1 };
+        msg('info', '確認しています…');
+        api(next, 'GET', '/v1/auth', undefined, 15000).then(function () {
+          lsSet(CFG_KEY, next);
+          authFailedToken = null;
+          if (old.device && old.device !== dev) { sentSet = {}; st.blobsVerifiedAt = 0; saveState(); }
+          msg('ok', '✅ Mac mini につながりました。これから保存のたびに自動で送ります。');
+          return checkExistingThenPush(dev);
+        }).catch(function (e) { msg('ng', '❌ ' + e.message); });
+      };
+      box.querySelector('[data-a="push"]').onclick = function () {
+        if (!isConfigured(getCfg())) return msg('ng', '先に合言葉を入れて「保存して接続を確認」を押してください');
+        msg('info', '送っています…');
+        pushNow('manual').then(function (r) {
+          if (r.ok) msg('ok', r.dup ? '✅ Mac mini の保管分は最新です' : '✅ Mac mini に送りました' + (r.blobs && r.blobs.sent ? '（写真 ' + r.blobs.sent + ' 件）' : ''));
+          else msg('ng', '❌ ' + r.error);
+        });
+      };
+      // 同じ名前の iPad の保管分があって、この端末が空なら、上書きする前に復元を勧める
+      function checkExistingThenPush(dev) {
+        return Promise.resolve(opt.getSnapshot()).then(function (s) {
+          var localTotal = sumCounts(s && s.counts);
+          return listSnaps().then(function (devs) {
+            var mine = devs.filter(function (d) { return d.device === dev; })[0];
+            var srvTotal = mine && mine.latest ? sumCounts(mine.latest.counts) : 0;
+            if (localTotal === 0 && srvTotal > 0) {
+              msg('info', '「' + dev + '」の名前で Mac mini に保管されたデータがあります（' + countsText(mine.latest.counts, labels) + '・' + fmtTime(mine.latest.at) + '）。この端末は空なので、下の「Mac mini から復元する」で戻せます。');
+              $('rsbox').open = true;
+              return drawDevs();
+            }
+            markDirty();
+          });
+        }).catch(function () { markDirty(); });
+      }
+      function drawDevs() {
+        var wrap = $('devs');
+        wrap.innerHTML = '<p class="vlt-sub">読み込み中…</p>';
+        return listSnaps().then(function (devs) {
+          if (!devs.length) { wrap.innerHTML = '<p class="vlt-sub">まだ何も保管されていません。</p>'; return; }
+          wrap.innerHTML = '';
+          devs.forEach(function (d) {
+            var row = document.createElement('div'); row.className = 'vlt-dev';
+            var opts = (d.history || []).map(function (h) {
+              return '<option value="' + esc(h.file) + '">' + esc(fmtTime(h.at) + '　' + countsText(h.counts, labels) + (h.reason === 'pre-restore' ? '　（復元前の控え）' : '')) + '</option>';
+            }).join('');
+            row.innerHTML = '<b>' + esc(d.device) + '</b>' + (d.device === (getCfg() || {}).device ? '　<span class="vlt-sub">（この iPad）</span>' : '') +
+              '<div class="vlt-sub">最終 ' + esc(d.latest ? fmtTime(d.latest.at) : '—') + (d.blobs ? '・写真 ' + d.blobs + ' 件' : '') + '</div>' +
+              '<select>' + opts + '</select><div class="vlt-row"><button class="vlt-warn">この内容で復元</button></div>';
+            row.querySelector('button').onclick = function () {
+              var file = row.querySelector('select').value;
+              var h = (d.history || []).filter(function (x) { return x.file === file; })[0] || {};
+              var q = '「' + d.device + '」の ' + fmtTime(h.at) + ' の内容（' + countsText(h.counts, labels) + '）で、この端末のデータを置き換えます。\n\n今この端末に入っている内容は、置き換える前に Mac mini に控えます。\n\nよろしいですか？';
+              if (!confirm(q)) return;
+              var btns = box.querySelectorAll('button'); Array.prototype.forEach.call(btns, function (b) { b.disabled = true; });
+              restoreFrom(d.device, file, function (t) { msg('info', t); }).then(function (res) {
+                if (res && res.ok) msg('ok', '✅ ' + (res.message || '復元しました'));
+                else msg('ng', '❌ ' + ((res && res.message) || '復元できませんでした'));
+              }).catch(function (e) { msg('ng', '❌ ' + e.message); }).then(function () {
+                Array.prototype.forEach.call(btns, function (b) { b.disabled = false; });
+              });
+            };
+            wrap.appendChild(row);
+          });
+        }).catch(function (e) { wrap.innerHTML = ''; msg('ng', '❌ ' + e.message); });
+      }
+      box.querySelector('[data-a="list"]').onclick = drawDevs;
+    }
+
+    // ── 起動時・画面の出入り・定期チェック ──
+    function kick() {
+      var cfg = getCfg();
+      if (!isConfigured(cfg)) { setLive('off'); return; }
+      if (restoring || inflight) return;
+      if (authBlocked()) { setLive('auth', live.lastError || '合言葉が違います'); return; }
+      if (st.pending || st.blobsPending) { setLive('pending'); schedule(2000); }
+      else if (!st.lastOkAt || now() - st.lastOkAt > HEARTBEAT_MS) { schedule(5000); setLive(st.lastOkAt ? 'ok' : 'pending'); }
+      else if (live.state !== 'guard' && live.state !== 'error') setLive('ok');
+    }
+    // 開いたままの端末（打刻iPadなど）でも30分ごとに確認する
+    function tick() { try { kick(); } catch (e) {} setTimeout(tick, TICK_MS); }
+    try {
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'hidden' && st.pending && isConfigured(getCfg()) && !authBlocked()) pushNow('auto');
+        if (document.visibilityState === 'visible') kick();
+      });
+      global.addEventListener('online', function () { if (st.pending) schedule(1000); });
+      setTimeout(kick, 0);
+      setTimeout(tick, TICK_MS);
+    } catch (e) {}
+
+    // 同じIDのまま中身が差し替わった写真（在庫の商品写真など）は、これを呼ぶと次回送り直す
+    function forgetBlob(id) {
+      try { blobGen[id] = (blobGen[id] || 0) + 1; if (sentSet[id]) { delete sentSet[id]; saveState(); } markDirty(); } catch (e) {}
+    }
+
+    return {
+      markDirty: markDirty, forgetBlob: forgetBlob, pushNow: function () { return pushNow('manual'); }, status: status, onStatus: onStatus,
+      listSnaps: listSnaps, restoreFrom: restoreFrom, mountSettings: mountSettings, mountBadge: mountBadge,
+      _listenerCount: function () { return listeners.length; },
+      isConfigured: function () { return isConfigured(getCfg()); },
+      _debug: { st: st, sentSet: function () { return sentSet; } }
+    };
+  }
+
+  global.createVault = createVault;
+})(typeof window !== 'undefined' ? window : this);
+/* VAULT-CLIENT:END */
+</script>
 </head>
 <body>
 <div id="app"></div>
@@ -252,7 +817,7 @@ const store={
 // ★PocketBase導入時：ミニPCでPBを起動し、下の url に院内サーバーのアドレスを入れるだけ。設定例：'http://192.168.1.50:8090'
 //   url='' のあいだは【端末内保存】（localStorage・iPad1台テスト運用モード）。LOCAL.on=false でメモリのみに戻せる。
 const PB={url:''};
-const APP_VERSION='0.9.1';const DATA_SCHEMA=1;
+const APP_VERSION='0.10.0';const DATA_SCHEMA=1;
 const LOCAL={on:true,key:'perio_app_data_v1'};
 // 接続状態：'local'（端末内保存）/ 'memory'（保存なし）/ 'online'（PB接続OK）/ 'offline'（PB到達不可）
 let netState='memory';
@@ -263,8 +828,10 @@ function localPayload(){return {schema:DATA_SCHEMA,app:APP_VERSION,savedAt:new D
   patients:store.patients,exams:store.exams,docs:store.docs,staff:store.staff,clinic:store.clinic};}
 function persistLocal(){
   if(netState!=='local')return true;
-  try{localStorage.setItem(LOCAL.key,JSON.stringify(localPayload()));return true;}
+  try{localStorage.setItem(LOCAL.key,JSON.stringify(localPayload()));}
   catch(e){toast('⚠ 端末への保存に失敗しました（容量不足の可能性）');return false;}
+  try{if(vault)vault.markDirty();}catch(_){} // 院内保管庫（Mac mini）へ複製を送る予約。失敗しても端末保存には影響しない
+  return true;
 }
 function loadLocal(){
   let raw=null;try{raw=localStorage.getItem(LOCAL.key);}catch(e){return null;}
@@ -286,6 +853,15 @@ function applyLoaded(d){
   if(d.clinic&&typeof d.clinic==='object')Object.assign(store.clinic,d.clinic);
 }
 function wipeLocal(){try{localStorage.removeItem(LOCAL.key);}catch(e){}}
+// 置き換えて端末に保存。保存に失敗したら画面の中身も元に戻して false（画面と端末の保存が食い違わないように）
+function applyLoadedAndSave(d){
+  const prev={patients:store.patients,exams:store.exams,docs:store.docs,staff:store.staff,clinic:Object.assign({},store.clinic)};
+  applyLoaded(d);
+  if(persistLocal())return true;
+  store.patients=prev.patients;store.exams=prev.exams;store.docs=prev.docs;store.staff=prev.staff;
+  Object.keys(store.clinic).forEach(k=>delete store.clinic[k]);Object.assign(store.clinic,prev.clinic);
+  return false;
+}
 function pbUrl(col,id){return PB.url+'/api/collections/'+encodeURIComponent(col)+'/records'+(id?'/'+encodeURIComponent(id):'');}
 function mapPatientToPB(p){return {id:p.id,no:p.no,chartNo:p.chartNo||'',sei:p.sei||'',mei:p.mei||'',seiKana:p.seiKana||'',meiKana:p.meiKana||'',name:p.name||'',kana:p.kana||'',birth:p.birth||'',gender:p.gender||'',notes:p.notes||'',recNo:p.recNo||''};}
 function mapPatientFromPB(r){return {id:r.id,no:r.no,chartNo:r.chartNo,sei:r.sei,mei:r.mei,seiKana:r.seiKana,meiKana:r.meiKana,name:r.name,kana:r.kana,birth:r.birth,gender:r.gender,notes:r.notes,recNo:r.recNo};}
@@ -314,8 +890,11 @@ const db={
       netState='local';
       const d=loadLocal();
       if(d&&d.__broken){ // 壊れた保存データ→退避済み。上書きせず警告してサンプルで起動
+        vaultHold=VAULT_HOLD_MSG;try{localStorage.setItem(VAULT_HOLD_KEY,'1');}catch(_){} // 読み直しても停止が続くよう端末に記録
         try{alert('⚠ 端末内の保存データが壊れていたため読み込めませんでした。\n壊れたデータは端末内に退避してあります（消えていません）。\nバックアップJSONをお持ちなら「💾 バックアップ」画面から復元してください。');}catch(_){}
         persistLocal();
+        // 保存領域がいっぱいで印を書けなかった場合に備え、見本で置き換えて空きができた後にもう一度書く
+        try{if(!localStorage.getItem(VAULT_HOLD_KEY))localStorage.setItem(VAULT_HOLD_KEY,'1');}catch(_){}
       }
       else if(d)applyLoaded(d); // 保存済みデータを復元。無ければサンプルのまま（初回）＝バックアップ画面の「全データ初期化」でまっさらにできる
       else persistLocal();  // 初回はサンプル込みで保存を確立
@@ -329,6 +908,31 @@ const db={
   saveDoc(d,isNew){if(isNew)store.docs.push(d);if(this.connected())pbWrite('docs',d,isNew,mapDocToPB);return persistLocal();},
   deleteDoc(id){store.docs=store.docs.filter(d=>d.id!==id);if(this.connected())fetch(pbUrl('docs',id),{method:'DELETE'}).catch(()=>{});persistLocal();},
 };
+
+// ───────── 院内保管庫（Mac mini への自動バックアップ） ─────────
+// 端末に保存するたびに（persistLocal）複製を Mac mini へ送る。端末内の保存・表示には影響しない。
+// 合言葉・住所・iPadの名前は同じ配信元の院内アプリ共通（💾 バックアップ画面で設定）。正本=Ai/院内保管庫/
+// ★実データを読み込み終わってから作る（init の db.load の後）。セルフテストや読込前の見本データを送らないため。
+const VAULT_LABELS={patients:'患者',exams:'検査',docs:'文書'};
+let vault=null;
+// 送信を止める理由（保存データが壊れて見本で起動した時）。端末に記録し、Mac mini からの復元・ファイル復元・全データ初期化で解除
+const VAULT_HOLD_KEY='perio_vault_hold';
+const VAULT_HOLD_MSG='この端末の保存データが壊れていたため、見本のまま起動しています。Mac mini への送信は止めています（Mac mini の保管分を見本で上書きしないため）。「Mac mini から復元する」で戻すか、見本を捨てて始めるなら「全データ初期化」をしてください';
+let vaultHold=(()=>{try{return localStorage.getItem(VAULT_HOLD_KEY)?VAULT_HOLD_MSG:null;}catch(_){return null;}})();
+function clearVaultHold(){vaultHold=null;try{localStorage.removeItem(VAULT_HOLD_KEY);}catch(_){}}
+function initVault(){vault=createVault({app:'perio',label:'歯周検査',appVersion:APP_VERSION,
+  // 保存時刻(savedAt)は外す：中身が同じなら Mac mini 側で重複として捨てられ、控えが無駄に増えない
+  getSnapshot:()=>{if(vaultHold)throw new Error(vaultHold);const d=localPayload();delete d.savedAt;return {data:d,counts:{patients:store.patients.length,exams:store.exams.length,docs:store.docs.length}};},
+  restore:async d=>{
+    if(!d||!Array.isArray(d.patients)||!Array.isArray(d.exams))return {ok:false,message:'受け取ったデータの形式が違います'};
+    if(!applyLoadedAndSave(d))return {ok:false,message:'端末への保存に失敗しました（容量不足の可能性）。データは元のままです'};
+    // 置き換えに成功してから、編集中の画面・患者フォームの入力を捨てる（復元した内容を古い入力で上書きしないように）
+    if(pe&&pe.dirty)pe.dirty=false; if(dc&&dc.dirty)dc.dirty=false; pf=null;
+    clearVaultHold();
+    setTimeout(()=>{route={name:'home'};render();},1500);
+    return {ok:true,message:`患者 ${store.patients.length}名・検査 ${store.exams.length}件・文書 ${store.docs.length}件を復元しました。まもなく患者一覧に戻ります。`};
+  }});}
+function mountVaultBadge(){try{vault.mountBadge(document.getElementById('vault-badge'));}catch(_){}}
 
 // ───────── ルーター ─────────
 let route={name:'home'};
@@ -359,7 +963,7 @@ function renderHome(){
   const lq=homeQ.trim().toLowerCase();
   const list=store.patients.filter(p=>!lq||p.name.toLowerCase().includes(lq)||(p.kana||'').includes(hira2kata(lq))||(p.kana||'').toLowerCase().includes(lq)||p.no.includes(lq)||(p.chartNo||'').includes(lq));
   app.innerHTML=`
-    <header class="bar"><h1>歯周基本検査</h1><div class="sub">患者を選んで検査を開始　${netBadge()}</div></header>
+    <header class="bar"><h1>歯周基本検査</h1><div class="sub">患者を選んで検査を開始　${netBadge()} <span id="vault-badge"></span></div></header>
     <div class="wrap">
       <div class="row" style="margin:18px 0 14px">
         <input id="q" class="ic" placeholder="氏名・フリガナ・番号で検索" value="${esc(homeQ)}"/>
@@ -380,6 +984,7 @@ function renderHome(){
       <p class="note">${netState==='local'?'データはこの端末（このURL）内に自動保存されます。定期的にJSONバックアップを取ってください。':'※ データは保存されません（メモリのみ）。'}</p>
       <p class="note" style="padding-top:4px">v${APP_VERSION}　<button class="linkbtn" style="font-size:.68rem" onclick="location.search='?selftest'">セルフテスト</button></p>
     </div>`;
+  mountVaultBadge();
   const q=document.getElementById('q');
   q.addEventListener('input',e=>{homeQ=e.target.value;const s=q.selectionStart;renderHome();const nq=document.getElementById('q');nq.focus();try{nq.setSelectionRange(s,s);}catch(_){}});
 }
@@ -481,7 +1086,7 @@ function renderBackup(){
   const d=loadLocal();const bytes=(()=>{try{return new Blob([JSON.stringify(localPayload())]).size;}catch(e){return 0;}})();
   const kb=bytes?(bytes/1024).toFixed(1)+' KB':'—';
   app.innerHTML=`
-    <header class="bar"><button class="back" onclick="APP.go({name:'home'})">◀ 患者一覧</button><h1>バックアップ・データ管理</h1><div class="sub">${netBadge()}</div></header>
+    <header class="bar"><button class="back" onclick="APP.go({name:'home'})">◀ 患者一覧</button><h1>バックアップ・データ管理</h1><div class="sub">${netBadge()} <span id="vault-badge"></span></div></header>
     <div class="wrap">
       <div class="card" style="padding:18px;margin-top:20px">
         <h2 style="font-size:.9rem;font-weight:700;margin:0 0 10px">現在のデータ</h2>
@@ -497,8 +1102,11 @@ function renderBackup(){
       <p style="font-size:.7rem;color:var(--soft);margin:6px 2px 0">iPadでは共有シートから「"ファイル"に保存」を選択。定期的に（毎診療日おすすめ）取ってください。</p>
       <button style="width:100%;padding:13px;border:1px solid var(--blue);border-radius:16px;background:#fff;color:var(--blue);font-weight:600;font-size:.9rem;cursor:pointer;margin-top:14px" onclick="APP.bkImportOpen()">📂 バックアップから復元（読み込み）</button>
       <p style="font-size:.7rem;color:var(--soft);margin:6px 2px 0">現在のデータを<b>すべて置き換え</b>ます（読み込み前に確認画面あり）。</p>
+      <div id="vault-mount"></div>
       <button class="linkbtn" style="display:block;margin:26px auto 0;color:var(--bad)" onclick="APP.bkWipe()">🗑 全データ初期化（サンプル患者も消してまっさらにする）</button>
     </div>`;
+  mountVaultBadge();
+  try{if(vault)vault.mountSettings(document.getElementById('vault-mount'),VAULT_LABELS);}catch(_){}
 }
 
 // ───────── 衛生士（担当者）登録 ─────────
@@ -1555,7 +2163,8 @@ window.APP={
     if(!confirm('全データ（患者・検査・文書・担当者）を削除して、まっさらな状態にします。よろしいですか？'))return;
     if(!confirm('本当に削除しますか？ この操作は取り消せません（必要なら先にJSON書き出しを）'))return;
     store.patients=[];store.exams=[];store.docs=[];store.staff=[];
-    wipeLocal();persistLocal();toast('全データを初期化しました');go({name:'home'});
+    pf=null;clearVaultHold();wipeLocal();persistLocal();try{if(vault)vault.pushNow();}catch(_){} // 意図的な初期化なので空でも送る（過去の複製はMac miniに残る）
+    toast('全データを初期化しました');go({name:'home'});
   },
   addStaff:()=>{const el=document.getElementById('staff-name');const nm=(el?el.value:'').trim();if(!nm)return;store.staff.push({id:generateId(),name:nm});persistLocal();renderStaff();},
   delStaff:id=>{store.staff=store.staff.filter(s=>s.id!==id);persistLocal();renderStaff();},
@@ -1675,7 +2284,10 @@ document.getElementById('bkfile').addEventListener('change',e=>{
       if(!d||!Array.isArray(d.patients)||!Array.isArray(d.exams))throw new Error('形式が違います');
       const when=d.savedAt?String(d.savedAt).replace('T',' ').slice(0,16):'不明';
       if(!confirm(`このバックアップで現在のデータを【すべて置き換え】ます。\n\n保存日時: ${when}\n患者 ${d.patients.length} / 検査 ${d.exams.length} / 文書 ${(d.docs||[]).length} / 担当者 ${(d.staff||[]).length}\n\nよろしいですか？`))return;
-      applyLoaded(d);persistLocal();toast('バックアップから復元しました');go({name:'home'});
+      if(!applyLoadedAndSave(d)){toast('⚠ 端末への保存に失敗しました（容量不足の可能性）。データは元のままです');return;}
+      pf=null;if(pe)pe.dirty=false;if(dc)dc.dirty=false;clearVaultHold(); // 編集中の入力は捨てる・送信の停止を解除
+      try{if(vault)vault.pushNow();}catch(_){} // 意図した置き換えなので件数が減っても Mac mini に送る
+      toast('バックアップから復元しました');go({name:'home'});
     }catch(err){toast('⚠ 復元に失敗：'+(err&&err.message||'不正なファイル'));}
   };
   reader.onerror=()=>{toast('⚠ ファイルを読み込めませんでした');};
@@ -1687,6 +2299,14 @@ function runSelfTest(){
   const eq=(name,got,want)=>{const g=JSON.stringify(got),w=JSON.stringify(want);T.push({name,pass:g===w,got:g,want:w});};
   const ok=(name,cond,info)=>{T.push({name,pass:!!cond,got:info==null?String(cond):String(info),want:'true'});};
   const P=(s,m)=>vParse(vNorm(s),m||'ppd').cmds;
+  // --- 院内保管庫（Mac mini）---
+  ok('vault 部品が読み込まれている',typeof createVault==='function');
+  ok('vault セルフテスト中は保管庫を動かさない（見本データを送らない）',vault===null);
+  {const snap=(()=>{try{return JSON.parse(JSON.stringify(localPayload()));}catch(e){return null;}})();
+   ok('vault 送る中身は端末保存と同じ形',snap&&Array.isArray(snap.patients)&&Array.isArray(snap.exams)&&Array.isArray(snap.docs));}
+  // 保管庫の送信状態（vault.perio.state）には件数などの数字だけを持つ。氏名・生年月日・歯式は書かない
+  ok('vault 患者データを localStorage の保管庫設定に書かない',(()=>{try{const st=localStorage.getItem('vault.perio.state')||'';
+    return !/"(name|kana|birth|teeth|sei|mei)"/.test(st)&&!store.patients.some(p=>p.name&&st.includes(p.name));}catch(e){return true;}})());
   // --- vNorm 正規化 ---
   eq('norm 助詞・単位・語尾','右上4は5',vNorm('右上の4は5ミリです'));
   eq('norm BOP別名','出血',vNorm('BOPプラス'));
@@ -1789,6 +2409,7 @@ window.addEventListener('beforeunload',e=>{if((route.name==='perio'&&pe&&pe.dirt
   if(db.connected())app.innerHTML='<div style="text-align:center;color:var(--soft);padding:80px 0;font-size:.9rem">サーバーに接続中…</div>';
   try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();}catch(e){} // 端末保存の永続化を要求（iOSの自動削除対策）
   await db.load();
+  try{if(netState==='local')initVault();}catch(e){console.warn('院内保管庫の初期化に失敗',e);} // 端末内保存モードのときだけ
   render();
 })();
 })();
