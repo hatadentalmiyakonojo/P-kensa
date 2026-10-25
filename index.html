@@ -893,7 +893,7 @@ const store={
 // ★PocketBase導入時：ミニPCでPBを起動し、下の url に院内サーバーのアドレスを入れるだけ。設定例：'http://192.168.1.50:8090'
 //   url='' のあいだは【端末内保存】。LOCAL.on=false でメモリのみに戻せる。
 const PB={url:''};
-const APP_VERSION='0.13.1';const DATA_SCHEMA=1;
+const APP_VERSION='0.13.2';const DATA_SCHEMA=1;
 // 端末内保存の書き先：IndexedDB（容量はGB単位）が本命。IndexedDB を一度も使えていない端末だけ従来の localStorage で動かす。
 // localStorage は Safari では配信元ごとに5MB（1字2バイトで数える）で、同じ配信元の院内アプリと枠を共有するため、1日30〜40件では約1か月で満杯になる。
 const LOCAL={on:true,key:'perio_app_data_v1',backend:null,idbName:'perio_app',migratedMark:'perio_idb_migrated',lastSavedAt:null};
@@ -1127,17 +1127,17 @@ const db={
   saveMeta(){return persistMeta();},
 };
 
-// ── 入力途中の下書き（検査・文書）。保存を押す前に Safari が落ちても、開き直して続きから再開できる ──
+// ── 入力途中の下書き（検査・文書・患者登録）。保存を押す前に Safari が落ちても、開き直して続きから再開できる ──
 // iPad の Safari では「ページを離れる前の警告（beforeunload）」が働かないため、入力のたびに自動で書いておく。
-const DRAFT_KEY={exam:'draft_exam',doc:'draft_doc'};
-let drafts={exam:null,doc:null},draftTimer={};
+const DRAFT_KEY={exam:'draft_exam',doc:'draft_doc',pf:'draft_pf'};
+let drafts={exam:null,doc:null,pf:null},draftTimer={};
 async function draftWrite(kind,obj){
   if(netState!=='local')return false;
   if(LOCAL.backend==='idb')return idbTx(['kv'],tx=>{const kv=tx.objectStore('kv');if(obj)kv.put(obj,DRAFT_KEY[kind]);else kv.delete(DRAFT_KEY[kind]);});
   try{const k='perio_'+DRAFT_KEY[kind];if(obj)localStorage.setItem(k,JSON.stringify(obj));else localStorage.removeItem(k);return true;}catch(_){return false;}}
 async function draftReadAll(){
-  const out={exam:null,doc:null};if(netState!=='local')return out;
-  for(const kind of ['exam','doc']){
+  const out={exam:null,doc:null,pf:null};if(netState!=='local')return out;
+  for(const kind of ['exam','doc','pf']){
     try{if(LOCAL.backend==='idb'){out[kind]=(await idbReq(idbConn.transaction(['kv'],'readonly').objectStore('kv').get(DRAFT_KEY[kind])))||null;
         const lk='perio_'+DRAFT_KEY[kind];let old=null;try{const raw=localStorage.getItem(lk);old=raw?JSON.parse(raw):null;}catch(_){}
         if(old&&(!out[kind]||String(old.at)>String(out[kind].at))){if(await draftWrite(kind,old)){out[kind]=old;try{localStorage.removeItem(lk);}catch(_){}}}
@@ -1146,23 +1146,29 @@ async function draftReadAll(){
   // 患者がいない・形が合わない下書きは使わない
   if(out.exam&&!(out.exam.teeth&&store.getPatient(out.exam.pid)))out.exam=null;
   if(out.doc&&!(out.doc.data&&store.getPatient(out.doc.pid)))out.doc=null;
+  if(out.pf&&!(out.pf.pf&&out.pf.pf.bd&&(out.pf.for==='new'||store.getPatient(out.pf.for))))out.pf=null;
   return out;}
 function examDraftObj(){return (pe&&pe.dirty)?{v:1,pid:pe.pid,examId:pe.examId||null,type:pe.type,date:pe.date,examiner:pe.examiner,teeth:clone(pe.teeth),
   touch:{ppd:[...touchSet('ppd')],mob:[...touchSet('mob')],bop:[...touchSet('bop')]},findings:pe.findings,at:new Date().toISOString()}:null;}
 function docDraftObj(){return (dc&&dc.dirty)?{v:1,pid:dc.pid,docId:dc.docId||null,kind:dc.kind,data:clone(dc.data),copy:dc.copy,at:new Date().toISOString()}:null;}
-function flushDraft(kind){clearTimeout(draftTimer[kind]);const o=kind==='exam'?examDraftObj():docDraftObj();if(!o)return;drafts[kind]=o;draftWrite(kind,o);}
+function pfDraftObj(){return (pf&&pf._dirty)?{v:1,for:pf._for,pf:clone(Object.assign({},pf,{errs:{}})),at:new Date().toISOString()}:null;}
+function flushDraft(kind){clearTimeout(draftTimer[kind]);const o=kind==='exam'?examDraftObj():kind==='doc'?docDraftObj():pfDraftObj();if(!o)return;drafts[kind]=o;draftWrite(kind,o);}
+// 患者登録・編集の欄に何か入れたら控えを書く（保存前に閉じても、氏名やフリガナを打ち直さずに済むように）
+function pfTouch(){if(!pf)return;pf._dirty=true;scheduleDraft('pf');}
+const DRAFT_LABEL={exam:'検査',doc:'文書',pf:'患者登録'};
 function scheduleDraft(kind){clearTimeout(draftTimer[kind]);draftTimer[kind]=setTimeout(()=>flushDraft(kind),600);}
 function clearDraft(kind){clearTimeout(draftTimer[kind]);drafts[kind]=null;draftWrite(kind,null).then(ok=>{if(!ok)setTimeout(()=>{if(!drafts[kind])draftWrite(kind,null);},1000);});}
 function draftSummary(kind){const d=drafts[kind];if(!d)return '';const p=store.getPatient(d.pid);
   const at=new Date(d.at);const when=isNaN(at)?'':`${at.getMonth()+1}/${at.getDate()} ${pad2(at.getHours())}:${pad2(at.getMinutes())}`;
+  if(kind==='pf'){const f=d.pf||{};const nm=((f.sei||'')+' '+(f.mei||'')).trim()||'氏名はまだ';return `${esc(nm)}・${d.for==='new'?'新規患者':'患者情報の編集'}（${when}）`;}
   if(kind==='exam'){ // 前回値が最初から入っているので「前回（または保存済みの元の検査）から変えた歯」の数を出す
     const base=d.examId?store.exams.find(e=>e.id===d.examId):store.patientExams(d.pid).find(e=>(e.type||'basic')===d.type);
     let n=0;if(base)n=changedCount(d.teeth,base.teeth);else ORDER.forEach(k=>{const x=d.teeth[k];if(x&&(x.ppd!=null||(x.ppd6&&x.ppd6.some(v=>v!=null))))n++;});
     return `${esc(p?p.name:'')}・${EXAM_LABEL[d.type]||'検査'}${d.examId?'（編集）':''}（${when}・${base?'変更':'入力'} ${n}歯）`;}
   return `${esc(p?p.name:'')}・${DOC_KIND[d.kind]||'文書'}（${when}）`;}
 function draftBannerHTML(){
-  return ['exam','doc'].filter(k=>drafts[k]).map(k=>`<div class="banner" style="margin-top:14px;background:#eff6ff;border-color:#93c5fd;color:#1e3a8a">
-    <div style="font-weight:700">📝 保存されていない${k==='exam'?'検査':'文書'}があります</div>
+  return ['exam','doc','pf'].filter(k=>drafts[k]).map(k=>`<div class="banner" style="margin-top:14px;background:#eff6ff;border-color:#93c5fd;color:#1e3a8a">
+    <div style="font-weight:700">📝 保存されていない${DRAFT_LABEL[k]}があります</div>
     <div style="font-size:.82rem;margin-top:2px">${draftSummary(k)}</div>
     <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
       <button class="btn-primary" style="width:auto;padding:10px 18px" onclick="APP.resumeDraft('${k}')">続きから再開</button>
@@ -1186,7 +1192,7 @@ function initVault(){vault=createVault({app:'perio',label:'歯周検査',appVers
     if(!d||!Array.isArray(d.patients)||!Array.isArray(d.exams))return {ok:false,message:'受け取ったデータの形式が違います'};
     if(!await applyLoadedAndSave(d))return {ok:false,message:'端末への保存に失敗しました（容量不足の可能性）。データは元のままです'};
     // 置き換えに成功してから、編集中の画面・患者フォームの入力と下書きを捨てる（復元した内容を古い入力で上書きしないように）
-    if(pe&&pe.dirty)pe.dirty=false; if(dc&&dc.dirty)dc.dirty=false; pf=null; clearDraft('exam');clearDraft('doc');
+    if(pe&&pe.dirty)pe.dirty=false; if(dc&&dc.dirty)dc.dirty=false; pf=null; clearDraft('exam');clearDraft('doc');clearDraft('pf');
     clearVaultHold();
     setTimeout(()=>{route={name:'home'};render();},1500);
     return {ok:true,message:`患者 ${store.patients.length}名・検査 ${store.exams.length}件・文書 ${store.docs.length}件を復元しました。まもなく患者一覧に戻ります。`};
@@ -1198,6 +1204,7 @@ let route={name:'home'};
 const app=document.getElementById('app');
 function go(r){if(route.name==='perio'&&pe&&pe.dirty&&r.name!=='perio'){if(!confirm('保存されていない変更があります。破棄して移動しますか？'))return;clearDraft('exam');}
   if(route.name==='doc'&&dc&&dc.dirty&&r.name!=='doc'){if(!confirm('保存されていない文書があります。破棄して移動しますか？'))return;clearDraft('doc');}
+  if(route.name==='patientForm'&&pf&&pf._dirty&&r.name!=='patientForm')flushDraft('pf');   // 戻っても入力は控えに残し、ホームの「続きから再開」で戻せる
   if(vc&&vc.active)vStop();clearPrint();route=r;render();window.scrollTo(0,0);}
 // 印刷用の中身は時間では消さない（iPad の印刷画面は window.print() の後も開いたままのことがあり、先に消すと白紙になる）。
 // 次に画面を移るときと、次の印刷の直前に片づける。
@@ -1302,15 +1309,15 @@ function renderPatientForm(pid){
     </div>`;
   // フリガナ自動入力（IME確定時にカタカナ化して追記）
   bindKana('f-sei','seiKana','sei');bindKana('f-mei','meiKana','mei');
-  document.getElementById('f-seik').addEventListener('input',e=>{pf.kanaLock.seiKana=true;pf.seiKana=e.target.value;});
-  document.getElementById('f-meik').addEventListener('input',e=>{pf.kanaLock.meiKana=true;pf.meiKana=e.target.value;});
+  document.getElementById('f-seik').addEventListener('input',e=>{pf.kanaLock.seiKana=true;pf.seiKana=e.target.value;pfTouch();});
+  document.getElementById('f-meik').addEventListener('input',e=>{pf.kanaLock.meiKana=true;pf.meiKana=e.target.value;pfTouch();});
 }
 const kanaBuf={};
 function bindKana(inputId,kanaField,key){
   const el=document.getElementById(inputId);
   el.addEventListener('compositionupdate',e=>{if(/^[ぁ-んー・\s]*$/.test(e.data||''))kanaBuf[key]=e.data||'';});
-  el.addEventListener('compositionend',e=>{const buf=kanaBuf[key]||'';kanaBuf[key]='';if(pf.kanaLock[kanaField]||!buf)return;const k=hira2kata(buf);if(!k)return;pf[kanaField]=(pf[kanaField]||'')+k;const kf=document.getElementById(kanaField==='seiKana'?'f-seik':'f-meik');if(kf)kf.value=pf[kanaField];});
-  el.addEventListener('input',e=>{pf[key]=e.target.value;if(e.target.value===''&&!pf.kanaLock[kanaField]){pf[kanaField]='';const kf=document.getElementById(kanaField==='seiKana'?'f-seik':'f-meik');if(kf)kf.value='';}});
+  el.addEventListener('compositionend',e=>{const buf=kanaBuf[key]||'';kanaBuf[key]='';if(pf.kanaLock[kanaField]||!buf)return;const k=hira2kata(buf);if(!k)return;pf[kanaField]=(pf[kanaField]||'')+k;const kf=document.getElementById(kanaField==='seiKana'?'f-seik':'f-meik');if(kf)kf.value=pf[kanaField];pfTouch();});
+  el.addEventListener('input',e=>{pf[key]=e.target.value;if(e.target.value===''&&!pf.kanaLock[kanaField]){pf[kanaField]='';const kf=document.getElementById(kanaField==='seiKana'?'f-seik':'f-meik');if(kf)kf.value='';}pfTouch();});
 }
 
 // ───────── 患者詳細（検査履歴 ＋ 新規検査） ─────────
@@ -2665,7 +2672,7 @@ window.APP={
     const prev={patients:store.patients,exams:store.exams,docs:store.docs,staff:store.staff};
     store.patients=[];store.exams=[];store.docs=[];store.staff=[];
     if(!await persistAll()){Object.assign(store,prev);showErr('初期化できませんでした（端末に書き込めません）。データは元のままです。');return;}
-    pf=null;clearVaultHold();clearDraft('exam');clearDraft('doc');try{if(vault)vault.pushNow();}catch(_){} // 意図的な初期化なので空でも送る（過去の複製はMac miniに残る）
+    pf=null;clearVaultHold();clearDraft('exam');clearDraft('doc');clearDraft('pf');try{if(vault)vault.pushNow();}catch(_){} // 意図的な初期化なので空でも送る（過去の複製はMac miniに残る）
     toast('全データを初期化しました');go({name:'home'});
   },
   addStaff:async()=>{const el=document.getElementById('staff-name');const nm=(el?el.value:'').trim();if(!nm)return;
@@ -2676,25 +2683,28 @@ window.APP={
   confirmImport:async()=>{const r=await applyImport(importData.items);if(!r){showErr('取り込めませんでした（端末に保存できません）。患者一覧は元のままです。');return;}
     importData=null;toast(`取り込み完了：新規${r.added}・更新${r.updated}`);go({name:'home'});},
   // 下書き（保存されていない検査・文書）の再開／破棄
-  resumeDraft:kind=>{const d=drafts[kind];if(!d||!store.getPatient(d.pid)){clearDraft(kind);render();return;}
+  resumeDraft:kind=>{const d=drafts[kind];
+    if(kind==='pf'){if(!d||!(d.for==='new'||store.getPatient(d.for))){clearDraft('pf');render();return;}
+      pf=clone(d.pf);pf._dirty=true;go({name:'patientForm',patientId:d.for==='new'?undefined:d.for});return;}
+    if(!d||!store.getPatient(d.pid)){clearDraft(kind);render();return;}
     if(kind==='exam'){const exists=d.examId&&store.exams.some(e=>e.id===d.examId);
       go({name:'perio',patientId:d.pid,examId:exists?d.examId:null,type:d.type,draft:d});
       if(d.examId&&!exists)toast('元の検査が見つからないため、新しい検査として再開します');}
     else{const exists=d.docId&&store.docs.some(x=>x.id===d.docId);
       dc={pid:d.pid,docId:exists?d.docId:null,kind:d.kind,data:clone(d.data),copy:d.copy!==false,dirty:true};drafts.doc=d;
       go({name:'doc',patientId:d.pid});}},
-  discardDraft:kind=>{if(!confirm('保存されていない'+(kind==='exam'?'検査':'文書')+'の入力を破棄します。よろしいですか？'))return;clearDraft(kind);render();},
+  discardDraft:kind=>{if(!confirm('保存されていない'+DRAFT_LABEL[kind]+'の入力を破棄します。よろしいですか？'))return;if(kind==='pf')pf=null;clearDraft(kind);render();},
   cancelImport:()=>{importData=null;go({name:'home'});},
   // patient form
-  pfSet:(k,v)=>{pf[k]=v;},
-  pfGender:(v)=>{pf.sei=document.getElementById('f-sei').value;pf.mei=document.getElementById('f-mei').value;pf.seiKana=document.getElementById('f-seik').value;pf.meiKana=document.getElementById('f-meik').value;pf.gender=v;renderPatientForm(pf._for==='new'?null:pf._for);},
+  pfSet:(k,v)=>{pf[k]=v;pfTouch();},
+  pfGender:(v)=>{pf.sei=document.getElementById('f-sei').value;pf.mei=document.getElementById('f-mei').value;pf.seiKana=document.getElementById('f-seik').value;pf.meiKana=document.getElementById('f-meik').value;pf.gender=v;pfTouch();renderPatientForm(pf._for==='new'?null:pf._for);},
   pfBirth:(part,raw)=>{
     pf.bd[part]=(part==='era')?raw:(raw===''?'':Number(raw));
     const eo=eraObj(pf.bd.era);if(pf.bd.ey&&eo&&pf.bd.ey>eraMaxYear(eo))pf.bd.ey=eraMaxYear(eo);
     const eo2=eraObj(pf.bd.era);const y=(eo2&&pf.bd.ey)?eo2.start+pf.bd.ey-1:'';
     if(pf.bd.d&&y&&pf.bd.m){const mx=daysInMonth(y,pf.bd.m);if(pf.bd.d>mx)pf.bd.d=mx;}
     pf.birth=(y&&pf.bd.m&&pf.bd.d)?(y+'-'+pad2(pf.bd.m)+'-'+pad2(pf.bd.d)):'';
-    renderPatientForm(pf._for==='new'?null:pf._for);
+    pfTouch();renderPatientForm(pf._for==='new'?null:pf._for);
   },
   pfSave:async(pid)=>{
     pf.sei=document.getElementById('f-sei').value;pf.mei=document.getElementById('f-mei').value;
@@ -2704,10 +2714,10 @@ window.APP={
     const payload={chartNo:pf.chartNo,sei:pf.sei.trim(),mei:pf.mei.trim(),seiKana:pf.seiKana.trim(),meiKana:pf.meiKana.trim(),gender:pf.gender,notes:pf.notes,birth:pf.birth,name:pf.sei.trim()+' '+pf.mei.trim(),kana:pf.seiKana.trim()+' '+pf.meiKana.trim()};
     if(pid){const p=store.getPatient(pid);const bak=Object.assign({},p);Object.assign(p,payload);
       if(!await db.savePatient(p,false)){Object.keys(p).forEach(k=>delete p[k]);Object.assign(p,bak);showErr(SAVE_FAIL_MSG);return;}
-      toast('患者情報を更新しました');pf=null;go({name:'patientDetail',patientId:pid});}
+      toast('患者情報を更新しました');pf=null;clearDraft('pf');go({name:'patientDetail',patientId:pid});}
     else{const np={id:generateId(),no:store.nextNo(),...payload};
       if(!await db.savePatient(np,true)){showErr(SAVE_FAIL_MSG);return;}
-      toast('患者を登録しました');pf=null;go({name:'patientDetail',patientId:np.id});}
+      toast('患者を登録しました');pf=null;clearDraft('pf');go({name:'patientDetail',patientId:np.id});}
   },
   // perio
   peField:(k,v)=>{if(pe.readOnly)return;pe[k]=v;pe.dirty=true;refreshSaveBtn();},
@@ -2838,7 +2848,7 @@ document.getElementById('bkfile').addEventListener('change',e=>{
       const when=d.savedAt?String(d.savedAt).replace('T',' ').slice(0,16):'不明';
       if(!confirm(`このバックアップで現在のデータを【すべて置き換え】ます。\n\n保存日時: ${when}\n患者 ${d.patients.length} / 検査 ${d.exams.length} / 文書 ${(d.docs||[]).length} / 担当者 ${(d.staff||[]).length}\n\nよろしいですか？`))return;
       if(!await applyLoadedAndSave(d)){showErr('端末への保存に失敗しました（容量不足の可能性）。データは元のままです。');return;}
-      pf=null;if(pe)pe.dirty=false;if(dc)dc.dirty=false;clearVaultHold();clearDraft('exam');clearDraft('doc'); // 編集中の入力と下書きは捨てる・送信の停止を解除
+      pf=null;if(pe)pe.dirty=false;if(dc)dc.dirty=false;clearVaultHold();clearDraft('exam');clearDraft('doc');clearDraft('pf'); // 編集中の入力と下書きは捨てる・送信の停止を解除
       try{if(vault)vault.pushNow();}catch(_){} // 意図した置き換えなので件数が減っても Mac mini に送る
       toast('バックアップから復元しました');go({name:'home'});
     }catch(err){toast('⚠ 復元に失敗：'+(err&&err.message||'不正なファイル'));}
@@ -2996,7 +3006,7 @@ function runSelfTest(){
 // 未保存の検査があるときはタブ/リロードで警告
 window.addEventListener('beforeunload',e=>{if((route.name==='perio'&&pe&&pe.dirty)||(route.name==='doc'&&dc&&dc.dirty)){e.preventDefault();e.returnValue='';}});
 // iPad では beforeunload が働かないので、アプリの切り替え・画面を閉じる瞬間に下書きを書き切る
-function flushDraftsNow(){if(route.name==='perio'&&pe&&pe.dirty)flushDraft('exam');if(route.name==='doc'&&dc&&dc.dirty)flushDraft('doc');}
+function flushDraftsNow(){if(route.name==='perio'&&pe&&pe.dirty)flushDraft('exam');if(route.name==='doc'&&dc&&dc.dirty)flushDraft('doc');if(route.name==='patientForm'&&pf&&pf._dirty)flushDraft('pf');}
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')flushDraftsNow();});
 window.addEventListener('pagehide',flushDraftsNow);
 // 起動：PB接続→サーバー / 未接続→端末内保存(localStorage) / 不可→メモリ
