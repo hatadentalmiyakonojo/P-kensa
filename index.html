@@ -1002,9 +1002,10 @@ const store={
 // ★PocketBase導入時：ミニPCでPBを起動し、下の url に院内サーバーのアドレスを入れるだけ。設定例：'http://192.168.1.50:8090'
 //   url='' のあいだは【端末内保存】。LOCAL.on=false でメモリのみに戻せる。
 const PB={url:''};
-const APP_VERSION='0.14.0';const DATA_SCHEMA=1;
+const APP_VERSION='0.14.1';const DATA_SCHEMA=1;
 // 更新内容（新しい順・アプリ内の「更新内容」とホームの「更新しました」に出す）
 const CHANGES=[
+  ['0.14.1','音声入力：iPadのホーム画面アイコンでは「🎤 音声入力」でキーボードのマイクの欄が上に開き、話し終えて約1秒で入る（「入力」を押さなくてよい）。キーボードの音声入力が「死」「後」「サンサンニ」のように返しても数字として読む'],
   ['0.14.0','製品としての総点検：一つ戻すで入力位置も戻る／音声が選んだ歯と別の歯に入る・モードが残る・取り消し後にずれる不具合を修正／「変」は出血を除いて判定／過去の日付の検査は日付より前の検査を前回値に／精密検査の後の基本検査は精密の最深部を初期値に／バックアップの復元を安全に（他のアプリのファイルを弾く・直前の状態に戻せる）／検索の表記ゆれ・CSVの二重登録防止・患者の削除（記録の無い人だけ）／使い方・新しい版のお知らせ・バックアップの促し・オフラインで開ける／患者名簿（レセコンCSV）でカルテ番号から氏名・生年月日を自動入力／重なった患者をまとめる／排膿の歯は出血ありとして数える／PCRが20%を超えたら文書の「磨き残し」を自動で'],
   ['0.13.2','患者登録・編集の入力途中を自動で控える'],
   ['0.13.1','P混検は乳歯も含めて検査し、ポケット検査はしない形に'],
@@ -1415,7 +1416,7 @@ const HELP=[
   <tr><td>動揺度すべて0</td><td>動揺度を全部0</td></tr><tr><td>右下6欠損</td><td>右下6番を欠損（方角を必ず付ける）</td></tr>
   <tr><td>取り消し</td><td>直前の発話を取り消し、同じ歯から言い直せる</td></tr></table>
   <p class="hp">聞き取りが不確かなとき（会話が混ざった・言い直し・「かな」「くらい」）は<b>入れずに</b>「入れていません」と出ます。もう一度言ってください。</p>
-  <p class="hp">ホーム画面のアイコンから開いたときは、iPadの音声認識が動かないことがあります。そのときはテンキーか、「文字で入力」欄でキーボードの🎤（音声入力）を使ってください。</p>`],
+  <p class="hp">iPadのホーム画面のアイコンから開いたときは、「🎤 音声入力」を押すと上に欄が開きます。キーボードの🎤を押して話すと、話し終えて約1秒で入ります（「入力」を押さなくてよい）。キーボードの音声入力が「死」「後」のように同じ読みの字で返しても、数字として読みます。</p>`],
  ['save','保存・紙・文書',`<p class="hp">保存した検査は<b>見るだけ</b>で開きます（うっかり書き換えないため）。直すときは「✏️ 編集する」。直して保存すると紙に「第2版」と出ます。</p>
   <p class="hp">患者ページの「📄 治療のお知らせ」（様式1）・「🪥 口腔衛生管理」（様式3）は、直近の検査から自動で入ります。<b>空欄の項目</b>は検査で測っていないので、確かめて入れてください。印刷するとお渡し用＋控が出ます。</p>`],
  ['backup','バックアップ（大切）',`<p class="hp">記録はこのiPadの中だけにあります。<b>毎日（少なくとも週に1回）</b>「💾 バックアップ・データ管理」→「JSONで書き出す」をしてください。保存先は「<b>このiPad内</b>」を選び、院長のMacへは AirDrop で渡します（iCloud Drive は選ばない）。</p>
@@ -2364,7 +2365,7 @@ const VQNAME={1:'右上',2:'左上',3:'左下',4:'右下'};
 const vToothName=n=>VQNAME[Math.floor(n/10)]+(n%10);
 const vc={active:false,engine:null,mode:'ppd',bopKind:'bop',bopQuad:null,cursor:null,lastTooth:null,sound:true,echo:false,log:[],
   heard:'',heardFinal:false,
-  avail:!!(window.SpeechRecognition||window.webkitSpeechRecognition)};
+  avail:!!(window.SpeechRecognition||window.webkitSpeechRecognition),homo:true,dict:false};
 const VMODE_LABEL={ppd:'深さ入力',bop:'BOP・排膿入力',mob:'動揺度入力'};
 const VMODE_HINT={ppd:'数字を連続で／「右上1から」「右上4は5」「ポケットすべて3」',bop:'「右上4」で出血＋／「右上4なし」で解除／「すべてなし」',mob:'数字0-3を連続で／「右上3は2」「動揺度右上が1でその他すべて0」'};
 // 音声認識テキストの正規化（全角/漢数字→算用数字、かな方角、フィラー除去）
@@ -2599,13 +2600,15 @@ function vPre(s){
   return s;}
 // かなの数字（発話全体が数字だけのとき／「…は」「…が」の直後の値だけ）。同音の漢字（死→4 など）は実機ログで確かめるまで使わない
 const V_KANA=[['きゅう',9],['きゅー',9],['しち',7],['なな',7],['はち',8],['ろく',6],['よーん',4],['よん',4],['さーん',3],['さん',3],['いち',1],['にー',2],['にい',2],['ごー',5],['しー',4],['ぜろ',0],['まる',0],['れい',0],['に',2],['ご',5],['し',4],['く',9]];
-const V_HOMO={'死':4,'録':6,'質':7,'蜂':8};
+// 数字と同じ読みの字（キーボードの音声入力は「4」を「死」、「5」を「後」のように返すことがある）。発話の全部が数字として読めるときだけ使う
+const V_HOMO=[['位置',1],['市',1],['壱',1],['弐',2],['荷',2],['似',2],['煮',2],['児',2],['参',3],['産',3],['酸',3],['惨',3],['死',4],['氏',4],['詩',4],['誌',4],['師',4],['後',5],['語',5],['碁',5],['呉',5],['午',5],['御',5],['録',6],['禄',6],['質',7],['菜々',7],['蜂',8],['鉢',8],['急',9],['球',9],['求',9],['旧',9],['級',9],['給',9],['宮',9],['苦',9],['句',9],['区',9],['丸',0]];
 function vKanaRun(s){ // 全部が数字（かな含む）なら算用数字の並びを返す。そうでなければ null
   const J={'じゅう':'10','じゅういち':'11','じゅうに':'12','じゅうさん':'13','じゅうよん':'14','じゅうご':'15'};if(J[s])return J[s];
-  let out='',i=0,conv=false;
+  let out='',i=0,conv=false,homoN=0;
   while(i<s.length){const ch=s[i];if(/[0-9]/.test(ch)){out+=ch;i++;continue;}
-    if(vc.homo&&ch in V_HOMO){out+=V_HOMO[ch];i++;conv=true;continue;}
+    if(vc.homo!==false){const h=V_HOMO.find(([w])=>s.startsWith(w,i));if(h){out+=h[1];i+=h[0].length;conv=true;homoN++;continue;}}
     const k=V_KANA.find(([w])=>s.startsWith(w,i));if(!k)return null;out+=k[1];i+=k[0].length;conv=true;}
+  if(homoN&&out.length===1)return null; // 「後」「死」の1文字だけは会話かもしれないので数字にしない
   return conv?out:null;}
 // 会話の混入ガード：解釈できずに残った部分に言葉（かな・漢字・英字）があれば、その発話は丸ごと入れない
 // （マイクを入れたまま「もう一回」「抜歯した方が…」「次回は3か月後です」と話すと検査値として入ってしまうため）
@@ -2626,7 +2629,7 @@ function vInterpret(raw,mode){
   if(/(?:^|[^上下0-9])[1-8]欠損/.test(s))return{s,res:null,bad:'（どの歯か分からないため入力しませんでした。「右下6欠損」のように方角を付けて言ってください）'};
   if(/^1[0-5]$/.test(s)&&(sep||mode==='mob'))return{s,res:{cmds:s.split('').map(d=>({t:'digit',v:+d})),noise:''},bad:null};
   if(/^(?:に|し|ご|く)$/.test(s))return{s,res:null,bad:'（1文字だけでは数字か分からないため入力しませんでした。もう一度どうぞ）'};
-  const kr=vKanaRun(s);
+  const kr=vKanaRun(s)??vKanaRun(s.replace(/[ァ-ヶ]/g,c=>String.fromCharCode(c.charCodeAt(0)-0x60)));
   if(kr!=null){ // かなの数字：2文字の「いちに」を12mmにまとめない（1と2として入れる）
     if(/^1[0-5]$/.test(kr)&&!/^じゅう/.test(s))return{s:kr,res:{cmds:kr.split('').map(d=>({t:'digit',v:+d})),noise:''},bad:null};
     s=kr;}
@@ -2674,13 +2677,13 @@ function vMakeEngine(){
     if(want){try{r.start();}catch(_){setTimeout(()=>{if(want){try{r.start();}catch(e){}}},200);}}else{vc.active=false;vRefreshPanel();}};
   r.onerror=ev=>{
     if(ev.error==='not-allowed'||ev.error==='service-not-allowed')
-      fail('音声認識が使えません（コード: '+ev.error+'）。'+(vDiag().standalone?'ホーム画面のアイコンから開いたアプリでは、iPadの音声認識が動かないことがあります。テンキーで入力するか、下の「文字で入力」欄でキーボードの🎤（音声入力）を使ってください（記録はこのアイコンのまま続けてください）。':ev.error==='service-not-allowed'?'この端末の音声認識サービスが使えません。テンキーで入力してください。':'設定→一般→キーボード→「音声入力」ON、設定→Safari→マイク「許可」、スクリーンタイムの制限を確認してください。'));
+      fail('音声認識が使えません（コード: '+ev.error+'）。'+(vDiag().standalone?'ホーム画面のアイコンから開いたアプリでは、iPadの音声認識が動かないことがあります。テンキーで入力するか、「🎤 音声入力」でキーボードのマイクの欄を開いて話してください（記録はこのアイコンのまま続けてください）。':ev.error==='service-not-allowed'?'この端末の音声認識サービスが使えません。テンキーで入力してください。':'設定→一般→キーボード→「音声入力」ON、設定→Safari→マイク「許可」、スクリーンタイムの制限を確認してください。'));
     else if(ev.error==='no-speech'||ev.error==='aborted'){/* 無音・自動停止は自動再開に任せる */}
     else if(ev.error==='network')fail('インターネットにつながっていないため、音声認識が使えません（network）。テンキーで入力してください。');
     else fail('認識エラー（'+ev.error+'）。もう一度「🎤 音声入力を開始」を押すか、テンキーで入力してください。');};
   return{start(){want=true;alive=false;clearTimeout(watch);try{r.start();}catch(_){}
       // 押しても認識が始まらない（ホーム画面アプリ等）ときに「話してください」のまま放置しない
-      watch=setTimeout(()=>{if(want&&!alive){vc.err=(vDiag().standalone?'ホーム画面のアイコンから開いたアプリでは、iPadの音声認識が動かないことがあります。テンキーで入力するか、下の「文字で入力」欄でキーボードの🎤（音声入力）を使ってください（記録はこのアイコンのまま続けてください）。':'音声認識が始まりませんでした。マイクの許可を確かめるか、テンキーで入力してください。');vRefreshPanel();}},8000);},
+      watch=setTimeout(()=>{if(want&&!alive){vc.err=(vDiag().standalone?'ホーム画面のアイコンから開いたアプリでは、iPadの音声認識が動かないことがあります。テンキーで入力するか、「🎤 音声入力」でキーボードのマイクの欄を開いて話してください（記録はこのアイコンのまま続けてください）。':'音声認識が始まりませんでした。マイクの許可を確かめるか、テンキーで入力してください。');vRefreshPanel();}},8000);},
     stop(){want=false;pending='';clearTimeout(watch);try{r.stop();}catch(_){}}};
 }
 function vDiag(){const ua=navigator.userAgent||'';
@@ -2694,7 +2697,7 @@ function vStart(){
   if(!pe||pe.readOnly||!hasVoice(pe.type))return;
   vc.err='';const d=vDiag();
   if(!vc.avail){
-    vc.err=d.standalone?'この開き方（ホーム画面のアイコン）では音声認識が使えません。テンキーで入力するか、下の「文字で入力」欄でキーボードの🎤（音声入力）を使ってください（記録はこのアイコンのまま続けてください）。'
+    vc.err=d.standalone?'この開き方（ホーム画面のアイコン）では音声認識が使えません。テンキーで入力するか、「🎤 音声入力」でキーボードのマイクの欄を開いて話してください（記録はこのアイコンのまま続けてください）。'
       :d.otherBrowser?'iOSではChrome等では音声認識が使えません。テンキーで入力してください。'
       :d.inApp?'アプリ内ブラウザでは動きません。テンキーで入力してください。'
       :'この端末/ブラウザは音声認識に対応していません。テンキーで入力してください。';
@@ -2714,6 +2717,20 @@ function vStart(){
   try{vc.engine.start();}catch(_){/* 連打時の InvalidStateError は無視 */}
   vRefreshPanel();
 }
+// キーボードのマイク（音声入力）を使うか：ホーム画面のアイコンやブラウザの音声認識が無いときは既定でこちら。パネルで切り替えられる
+function useKbdVoice(){if(vc.kbd!=null)return vc.kbd;let v=null;try{v=localStorage.getItem('perio_voice_kbd');}catch(_){}if(v==='1'||v==='0'){vc.kbd=v==='1';return vc.kbd;}return !vc.avail||isStandalone();}
+const DICT_WAIT=1000;let dictTimer=null,dictCommitted='';
+function dictFlush(){const el=document.getElementById('v-dict');if(!el||!pe||pe.readOnly)return;const cur=el.value;if(cur===dictCommitted)return;
+  let delta;if(cur.startsWith(dictCommitted))delta=cur.slice(dictCommitted.length);
+  else{ // すでに入れた部分を音声入力が書き直した：入れ直すと二重になるので入れずに知らせる
+    dictCommitted=cur;vc.log.unshift({raw:cur,note:'直前の聞き取りが書き直されました（入れ直していません）。入った値を歯式で確かめてください',rej:1});vc.log=vc.log.slice(0,8);dictStatus();return;}
+  dictCommitted=cur;if(!delta.trim())return;
+  if(vc.cursor==null&&!pe.done)vc.cursor=(pe.sel!=null&&!vSkip(pe.sel))?pe.sel:vFirstFrom(null);
+  vHandle(delta);dictStatus();
+  if(cur.length>120){el.value='';dictCommitted='';}} // 長くなったら欄を空ける（入れ終わった分だけ）
+function dictStatus(){const st=document.getElementById('dict-status');if(!st)return;const l=vc.log[0];
+  const tgt=`<span style="color:var(--blue-d)">${VMODE_LABEL[vc.mode]}　${vc.cursor?'▶ '+vToothName(vc.cursor):'（最後の歯まで入力済み）'}</span>`;
+  st.innerHTML=tgt+(l?`<div style="margin-top:4px;color:${l.rej?'#9a3412':'#166534'}">${l.rej?'✗ 入れていません：':'✓ '}${esc(l.note)}<span style="font-weight:400;color:var(--soft)">（「${esc(l.raw)}」）</span></div>`:'<div style="margin-top:4px;font-weight:400;color:var(--soft)">話し終えて約1秒で入ります。「出血」「右上4は5」「取り消し」も使えます。</div>');}
 function vStop(){if(vc.engine)vc.engine.stop();vc.active=false;const p=document.getElementById('voice-panel');if(p)vRefreshPanel();}
 // 上部のコンパクトな開始バー（押しやすい位置に配置）
 function vBarHTML(){
@@ -2746,17 +2763,17 @@ function vPanelHTML(){
       <span style="flex:1"></span>
       ${opt(vc.sound,'確認音','vOptSound')}${opt(vc.echo,'読み上げ','vOptEcho')}
     </div>
-    <div style="display:flex;gap:8px;margin-top:10px">
-      <input id="v-text" class="ic" style="flex:1;font-size:.95rem;padding:10px 12px" enterkeyhint="done" placeholder="文字で入力（この検査に入ります）例：3 3 2／右上4は5" onkeydown="if(event.key==='Enter'&&!event.isComposing){event.preventDefault();APP.vRunText();}"/>
-      <button class="nb" onclick="APP.vRunText()">入力</button>
+    <div style="margin-top:10px;font-size:.78rem;color:var(--soft);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span>聞き取り方：<b style="color:var(--ink)">${useKbdVoice()?'キーボードのマイク（上の欄に話す）':'ブラウザの音声認識'}</b></span>
+      ${vc.avail?`<button class="tog" style="padding:7px 12px;font-size:.78rem" onclick="APP.vUseBrowser()">${useKbdVoice()?'ブラウザの音声認識に切り替える':'キーボードのマイクに切り替える'}</button>`:''}
     </div>
-    <div style="margin-top:8px;font-size:.72rem;color:var(--soft)">「文字で入力」欄でキーボードの🎤（音声入力）を使うこともできます。言い終えたら「入力」か改行。</div>
+    <div style="margin-top:6px;font-size:.72rem;color:var(--soft)">ホーム画面のアイコンから開いたときは、キーボードのマイクを使います（ブラウザの音声認識が動かないため）。</div>
     ${vc.err?`<details style="margin-top:6px;font-size:.66rem;color:var(--soft)"><summary>診断の情報（院長向け）</summary>認識API=${window.SpeechRecognition?'標準':window.webkitSpeechRecognition?'webkit':'なし'} / 通信=${navigator.onLine?'オン':'オフ'} / ${isStandalone()?'ホーム画面アプリ':'ブラウザ'} / ${esc((navigator.userAgent.match(/(iPhone|iPad|Macintosh)[^)]*/)||['?'])[0])}</details>`:''}
     ${vc.log.length?`<div style="margin-top:10px;font-size:.7rem;color:var(--soft);border-top:1px solid var(--line2);padding-top:8px">
       ${vc.log.map(l=>`<div style="display:flex;gap:8px;padding:2px 0"><span style="color:var(--faint);flex:0 0 45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">「${esc(l.raw)}」</span><span style="${l.rej?'color:var(--warn)':''}">→ ${esc(l.note)}</span></div>`).join('')}
     </div>`:''}`;
 }
-function vRefreshPanel(){const b=document.getElementById('voice-bar');if(b)b.innerHTML=vBarHTML();const p=document.getElementById('voice-panel');if(p)p.innerHTML=vPanelHTML();const vb=document.getElementById('vbtn');if(vb){vb.className='vbtn'+(vc.active?' on':'');vb.textContent=vc.active?'● 音声 停止':'🎤 音声入力';}}
+function vRefreshPanel(){const b=document.getElementById('voice-bar');if(b)b.innerHTML=vBarHTML();const p=document.getElementById('voice-panel');if(p)p.innerHTML=vPanelHTML();const vb=document.getElementById('vbtn');if(vb){const on=vc.active||vc.dict;vb.className='vbtn'+(on?' on':'');vb.textContent=on?'● 音声 停止':'🎤 音声入力';}dictStatus();}
 
 // ───────── 歯周検査 本体（前回値の引き継ぎ＋変更ハイライト） ─────────
 let pe=null;
@@ -2804,6 +2821,12 @@ function renderPerio(pid,examId,newType){
     <div class="wrap wide">
       ${readOnly?`<div class="banner" style="margin-top:14px;background:#f1f5f9;border-color:#cbd5e1;color:#334155">🔒 保存済みの検査を<b>見るだけ</b>で開いています（うっかり書き換えないため）。直すときは <button class="btn-primary" style="width:auto;min-height:44px;padding:8px 16px;margin-left:6px" onclick="APP.startEdit()">✏️ 編集する</button>${carriedList().length?`<div style="margin-top:6px;font-size:.8rem">「前」＝この検査では確認せず前回値のまま記録した歯（${carriedList().length}歯）</div>`:''}</div>`:''}
       ${readOnly?'':'<div id="missbar" style="margin-top:12px"></div>'}
+      ${hasVoice(type)&&!readOnly?`<div class="card" id="dict-row" style="display:none;padding:10px 14px;margin-top:10px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <input id="v-dict" class="ic" style="flex:1;min-width:240px;font-size:1.15rem;padding:12px 14px" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done"
+            placeholder="ここで話す：キーボードの🎤を押して「3 3 2」" oninput="APP.dictInput()" oncompositionend="APP.dictInput()" onkeydown="if(event.key==='Enter'&&!event.isComposing){event.preventDefault();APP.dictCommit();}" onblur="APP.dictBlur()"/>
+          <button class="nb" onclick="APP.dictClose()">閉じる</button></div>
+        <div id="dict-status" style="margin-top:8px;font-size:.88rem;font-weight:700"></div></div>`:''}
       ${hasVoice(type)&&!readOnly?'<div class="card" id="voice-bar" style="padding:8px 14px;margin-top:10px"></div>':''}
       <div class="card" id="arch-card" style="padding:12px 0;margin-top:14px">
         <div class="rlbar"><span class="rl">右 R</span><span class="arch-label" style="margin:0">上顎 UPPER</span><span class="rl">左 L</span></div>
@@ -2936,7 +2959,7 @@ function missBarHTML(){
   const hasHist=pe.hist&&pe.hist.length;
   const undoBtn=`<button style="border:1.5px solid ${hasHist?'#0f766e':'#cbd5e1'};background:#fff;color:${hasHist?'#0f766e':'#64748b'}" onclick="APP.undo()">↩ 一つ戻す</button>`;
   return `<div class="tbar">
-    ${hasVoice(pe.type)?`<button id="vbtn" class="vbtn${vc.active?' on':''}" onclick="APP.vToggle()">${vc.active?'● 音声 停止':'🎤 音声入力'}</button>`:''}
+    ${hasVoice(pe.type)?`<button id="vbtn" class="vbtn${vc.active||vc.dict?' on':''}" onclick="APP.vToggle()">${vc.active||vc.dict?'● 音声 停止':'🎤 音声入力'}</button>`:''}
     ${prec||pe.type==='mixed'?'':mbtn('bop','🩸 出血(BOP)')+mbtn('mob','〰 動揺度')}${mbtn('miss','🦷 欠損')}${pe.type==='mixed'||ORDER.some(n=>pe.teeth[n].primary)?mbtn('prim','🍼 乳歯'):''}
     ${measuresPpd(pe.type)&&ORDER.some(n=>{const x=pe.teeth[n];return !x.missing&&!x.primary&&x.mobility==null;})?`<button style="border:1.5px solid #374151;background:#fff;color:#374151" onclick="APP.mobRestZero()">動揺度：残りを全部0</button>`:''}
     <span style="flex:1"></span>${undoBtn}
@@ -3419,7 +3442,19 @@ window.APP={
   printExam:async()=>{const cur=pe;if(!gapConfirm())return;const r=await saveExamCore();if(!r||pe!==cur)return;if(r!=='unchanged')toast(r==='recreated'?'元の検査が見つからないため、新しい検査として保存しました':'保存しました');
     printExam(pe.patient,{teeth:pe.teeth,type:pe.type,date:pe.date,examiner:pe.examiner,carried:carriedList(),createdAt:pe.createdAt,updatedAt:pe.updatedAt,rev:pe.rev,findings:pe.findings});},
   // 音声入力
-  vToggle:()=>{if(vc.active)vStop();else vStart();},
+  vToggle:()=>{if(vc.active){vStop();return;}if(vc.dict){APP.dictClose();return;}if(useKbdVoice())APP.dictOpen();else vStart();},
+  dictOpen:()=>{if(!pe||pe.readOnly||!hasVoice(pe.type))return;vc.dict=true;dictCommitted='';
+    vc.cursor=(pe.sel!=null&&!vSkip(pe.sel))?pe.sel:(vc.cursor&&!vSkip(vc.cursor))?vc.cursor:(pe.done?null:vFirstFrom(null));
+    if(vc.cursor!=null&&pe.sel!==vc.cursor){pe.sel=vc.cursor;refreshArch();renderEditor();}
+    try{vAudioCtx=vAudioCtx||new (window.AudioContext||window.webkitAudioContext)();if(vAudioCtx.resume)vAudioCtx.resume();}catch(_){}
+    const row=document.getElementById('dict-row');if(row)row.style.display='';const el=document.getElementById('v-dict');if(el){el.value='';el.focus();}
+    vRefreshPanel();dictStatus();},
+  dictClose:()=>{dictFlush();vc.dict=false;const row=document.getElementById('dict-row');if(row)row.style.display='none';const el=document.getElementById('v-dict');if(el){el.value='';el.blur();}dictCommitted='';vRefreshPanel();},
+  // 文字が入るたびに待ち直し、1秒止まったら新しく入った分だけを入れる（前に入れた分は入れ直さない）
+  dictInput:()=>{clearTimeout(dictTimer);dictTimer=setTimeout(dictFlush,DICT_WAIT);},
+  dictCommit:()=>{clearTimeout(dictTimer);dictFlush();},
+  dictBlur:()=>{clearTimeout(dictTimer);dictFlush();const el=document.getElementById('v-dict');if(el)el.value='';dictCommitted='';},
+  vUseBrowser:()=>{vc.kbd=!useKbdVoice();try{localStorage.setItem('perio_voice_kbd',vc.kbd?'1':'0');}catch(_){}if(vc.dict)APP.dictClose();vRefreshPanel();},
   vSetMode:m=>{vc.mode=m;if(m==='bop'){vc.bopKind='bop';vc.bopQuad=null;}vRefreshPanel();}, // 出血モードは毎回「出血＋」から（前の「消す」を持ち越さない）
   vOptSound:()=>{vc.sound=!vc.sound;vRefreshPanel();},
   vOptEcho:()=>{vc.echo=!vc.echo;vRefreshPanel();},
@@ -3677,6 +3712,8 @@ function runSelfTest(){
   {const t=freshTeeth();ORDER.forEach(n=>{t[n].ppd=3;});t[16].pus=true;eq('v14 排膿の歯は出血率に数える（院長 2026-10-26）',examStats(t,'basic').bopPct,3);}
   {const keep=store.exams;const t=freshTeeth();ORDER.forEach(n=>{t[n].plq=[true,false,false,false];});store.exams=[{id:'pq',patientId:'p002',date:'2026-10-20',type:'precision',teeth:t}];
    const s3=newDocData('s3','p002'),s1=newDocData('s1i','p002');store.exams=keep;ok('v14 PCR 25%（目標20%超）で様式3「磨き残し」・様式1「多い」',s3.state.includes('磨き残しがあります')&&s1.plaque==='多い');}
+  {const r=x=>{const o=vInterpret(x,'ppd');return o.bad?'BAD':o.res.cmds.map(c=>c.v).join();};
+   eq('v14.1 キーボードの音声入力の形（同音の字・カタカナ・漢数字）を数字に・1文字の「後」は入れない',[r('3死2'),r('サンサンニ'),r('三三二'),r('死死後'),r('後')],['3,4,2','3,3,2','3,3,2','4,4,5','BAD']);}
   renderSelfTest(T);
   // 端末の保存場所（IndexedDB）に書けて読めるか：本物のデータとは別の一時DBで確かめて消す（iPad の Safari で開いたときの点検用）
   selfTestIDB().then(r=>{if(r){T.push(r);renderSelfTest(T);}}).catch(()=>{});
