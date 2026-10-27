@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8"/>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'self' https://mini.hatadental.net:8443 https://*.hatadental.net:8443 http://127.0.0.1:* http://localhost:*; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'self' https://mini.hatadental.net:8443 https://*.hatadental.net:8443 https://mini.hatadental.net:8447 https://*.hatadental.net:8447 http://127.0.0.1:* http://localhost:*; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="format-detection" content="telephone=no"/>
@@ -980,6 +980,362 @@
 })(typeof window !== 'undefined' ? window : this);
 /* VAULT-CLIENT:END */
 </script>
+<script>
+/* STT-CLIENT:BEGIN v1 ─ 院内の Mac mini で声を聞き取る録音部品
+   正本: Ai/院内保管庫/stt/stt-client.js（アプリに組み込むときは、この BEGIN〜END をそのまま貼る。アプリ側で直接直さない）
+
+   「🎤」を1回押せば、止めるまで聞き続ける。話の切れ目（無音 約0.6秒）ごとに声を 16kHz・モノラルの WAV にして
+   院内の Mac mini（音声の聞き取り https://mini.hatadental.net:8447）へ送り、返ってきた文字をコールバックで渡す。
+   - 声は Mac mini にだけ送る（院外へは出さない）。端末にも保存しない
+   - 住所と合言葉は院内保管庫の設定（localStorage 'vault.cfg'・同じ github.io の院内アプリで共通）を使う。
+     住所は保管庫の住所のポート 8443 を 8447 に変えたもの（vault.cfg に sttUrl があればそれ）
+   - 外部ライブラリなし。グローバルには createStt だけを置く
+   - AudioWorklet は使わない（アプリの CSP が blob: のスクリプトを許さないため）。ScriptProcessor で録る
+
+   使い方:
+     const stt = createStt({
+       hint: 'perio',                                   // perio＝歯周検査の言い方に寄せる（既定）／none
+       onText:  (text, info) => {},                     // 1発話ごと・話した順。空の結果は来ない。info={sec, ms, wait, rtt, seq}
+       onState: (state, info) => {},                    // 'starting'|'listening'|'speaking'|'stopped'（info.reason＝止まった理由）
+       onError: (err) => {},                            // err.kind と err.message（下の一覧）。err.fatal=true なら聞くのを止めた
+       onLevel: (level, speaking) => {},                // 任意。0〜1の音量（約0.1秒ごと）
+       onResult:(res) => {},                            // 任意。空も含めた全部の結果（調べもの用）
+     });
+     🎤ボタンのタップの中で → stt.start()              ※iPad はタップの中で始めないとマイクと音が動かない
+     止める → stt.stop()（話し途中の分も送って、返事を待ってから終わる）／ stt.abort()（送っていない分は捨てる）
+     設定の確認 → stt.check().then(r => r.ok ? … : r.message)
+     対応しているか → createStt.isSupported() → {ok, kind?, message?}
+
+   err.kind の一覧:
+     unsupported  … このブラウザでは録音できない          insecure   … https でない画面
+     unconfigured … 院内保管庫の合言葉が未設定            mic-denied … マイクの使用を断られた
+     mic-missing  … マイクが無い                           mic-busy   … マイクを他で使用中・音が来ない
+     net          … Mac mini に届かない・時間切れ           auth       … 合言葉が違う／間違いが続いて一時停止
+     busy         … Mac mini が混み合っている               server     … Mac mini 側のエラー
+     too-long     … 1回の声が長すぎた（20秒まで）
+     fatal（聞くのを止める）: unsupported / insecure / unconfigured / mic-* / net / auth
+*/
+(function (global) {
+  'use strict';
+  if (global.createStt) return;
+
+  var CFG_KEY = 'vault.cfg';
+  var DEFAULT_URL = 'https://mini.hatadental.net:8447';
+  var SR = 16000;
+  var FRAME = 320;                       // 20ms
+  var DEF = {
+    silenceMs: 600,                      // この長さ静かなら1発話の終わり
+    minSpeechMs: 200,                    // 声の部分がこれより短ければ捨てる（咳・物音）
+    maxMs: 15000,                        // これより長く話し続けたら、そこで区切って送る（Mac mini は20秒まで）
+    preRollMs: 300,                      // 話し始めの前も少し付ける（最初の音が欠けないように）
+    tailMs: 250,                         // 話し終わりの後ろも少し付ける
+    minDb: -50,                          // これより小さい音は声とみなさない
+    marginDb: 10,                        // まわりの雑音よりこれだけ大きければ声
+    startFrames: 3,                      // 60ms 続いたら話し始め
+    timeoutMs: 20000,                    // 1発話の返事を待つ上限
+  };
+
+  function lsGet(k) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch (e) { return null; } }
+  function err(kind, message, extra) { var e = new Error(message); e.kind = kind; e.fatal = /^(unsupported|insecure|unconfigured|mic-|net|auth)/.test(kind); if (extra) for (var k in extra) e[k] = extra[k]; return e; }
+
+  function sttUrlFrom(cfg) {
+    if (cfg && typeof cfg.sttUrl === 'string' && /^https?:\/\//.test(cfg.sttUrl)) return cfg.sttUrl.replace(/\/+$/, '');
+    if (cfg && typeof cfg.url === 'string' && /^https?:\/\//.test(cfg.url)) {
+      var u = cfg.url.replace(/\/+$/, '');
+      if (/:8443$/.test(u)) return u.replace(/:8443$/, ':8447');
+      if (/^https:\/\/[^\/:]+$/.test(u)) return u + ':8447';
+    }
+    return DEFAULT_URL;
+  }
+
+  function isSupported() {
+    var g = global;
+    if (!g.navigator || !g.navigator.mediaDevices || !g.navigator.mediaDevices.getUserMedia) return { ok: false, kind: 'unsupported', message: 'このブラウザではマイクを使えません' };
+    if (!(g.AudioContext || g.webkitAudioContext)) return { ok: false, kind: 'unsupported', message: 'このブラウザでは録音できません（AudioContext がありません）' };
+    if (g.isSecureContext === false) return { ok: false, kind: 'insecure', message: 'https の画面でないとマイクを使えません' };
+    return { ok: true };
+  }
+
+  // ── 48kHz などを 16kHz に落とす（区間の平均＝簡単な低域フィルター付きの間引き）。呼び出しをまたいで続きを覚える ──
+  function Resampler() { this.tail = new Float32Array(0); this.pos = 0; this.rate = 0; }
+  Resampler.prototype.push = function (x, inRate) {
+    if (inRate !== this.rate) { this.rate = inRate; this.tail = new Float32Array(0); this.pos = 0; }
+    var ratio = inRate / SR;
+    var buf;
+    if (this.tail.length) { buf = new Float32Array(this.tail.length + x.length); buf.set(this.tail, 0); buf.set(x, this.tail.length); } else buf = x;
+    if (ratio === 1) { this.tail = new Float32Array(0); return Float32Array.from(buf); }
+    var n = Math.max(0, Math.floor((buf.length - this.pos) / ratio));
+    var out = new Float32Array(n);
+    var pos = this.pos;
+    for (var k = 0; k < n; k++) {
+      var i0 = Math.floor(pos), i1 = Math.floor(pos + ratio);
+      if (i1 <= i0) i1 = i0 + 1;
+      var s = 0;
+      for (var i = i0; i < i1; i++) s += buf[i];
+      out[k] = s / (i1 - i0);
+      pos += ratio;
+    }
+    var cut = Math.min(buf.length, Math.floor(pos));
+    this.tail = buf.slice(cut);
+    this.pos = pos - cut;
+    return out;
+  };
+
+  // ── 発話の区切り（音の大きさ＋無音の長さ）。16kHz の 20ms ごとに feed() する ──
+  function Vad(o, onSegment) {
+    this.o = o; this.onSegment = onSegment;
+    this.floor = -60; this.frames = 0; this.speaking = false;
+    this.pre = []; this.seg = []; this.hot = 0; this.quiet = 0; this.voiced = 0; this.lastDb = -100;
+  }
+  Vad.prototype.thresholds = function () { var on = Math.max(this.o.minDb, this.floor + this.o.marginDb); return { on: on, off: on - 4 }; };
+  Vad.prototype.feed = function (f) {
+    var s = 0; for (var i = 0; i < f.length; i++) s += f[i] * f[i];
+    var db = 10 * Math.log(s / f.length + 1e-12) / Math.LN10;
+    this.lastDb = db; this.frames++;
+    var th = this.thresholds();
+    var o = this.o;
+    if (!this.speaking) {
+      var calib = Math.ceil(o.preRollMs / 20);
+      var keep = calib + o.startFrames;
+      this.pre.push(f);
+      if (this.pre.length > keep) this.pre.shift();
+      // 最初の 0.3 秒はまわりの雑音の大きさを測るだけ（一番静かなところを基準に。すぐ話し始めても声を基準にしない）
+      // 上限 -42dB：押してすぐ話し始めても、声の大きさを雑音とまちがえない
+      if (this.frames <= calib) { this.floor = Math.min(-42, this.frames === 1 ? db : Math.min(this.floor, db)); return; }
+      // その後もまわりの雑音の大きさを追う（下がるのは速く・上がるのはゆっくり＝1秒に2.5dB）
+      if (db < this.floor) this.floor = this.floor * 0.7 + db * 0.3; else this.floor = Math.min(db, this.floor + 0.05);
+      if (db > th.on) { this.hot++; } else this.hot = 0;
+      if (this.hot >= o.startFrames) {
+        this.speaking = true; this.seg = this.pre.slice(); this.pre = []; this.quiet = 0; this.voiced = this.hot; this.hot = 0; this.dbs = [];
+      }
+      return;
+    }
+    this.seg.push(f);
+    this.dbs.push(db);
+    if (db < th.off) this.quiet++; else { this.quiet = 0; this.voiced++; }
+    if (this.quiet * 20 >= o.silenceMs) return this.end(false);
+    // 吸引・機械の音のような「ずっと同じ大きさの音」が2秒続いたら声ではない：雑音の基準をその大きさに上げて区切る
+    if (this.seg.length >= 150 && this.dbs.length >= 100) {
+      var last = this.dbs.slice(-100), mx = Math.max.apply(null, last), mn = Math.min.apply(null, last);
+      if (mx - mn < 6) {
+        var sum = 0; for (var q = 0; q < last.length; q++) sum += last[q];
+        this.floor = sum / last.length;
+        var all = this.dbs, amx = Math.max.apply(null, all), amn = Math.min.apply(null, all);
+        if (amx - amn < 8) { this.speaking = false; this.seg = []; this.pre = []; this.hot = 0; this.quiet = 0; this.voiced = 0; return; }   // 最初から雑音だけ＝送らない
+        this.quiet = 100; this.voiced = Math.max(0, this.voiced - 100);
+        return this.end(false);
+      }
+    }
+    if (this.seg.length * 20 >= o.maxMs) return this.end(true);
+  };
+  // 区切って送る。cut=true は長すぎて途中で切った（話は続いている）
+  Vad.prototype.end = function (cut) {
+    var o = this.o, seg = this.seg;
+    if (!cut) { var drop = Math.max(0, this.quiet - Math.ceil(o.tailMs / 20)); if (drop) seg = seg.slice(0, seg.length - drop); }
+    var voicedMs = this.voiced * 20;
+    this.seg = []; this.quiet = 0; this.voiced = 0;
+    if (!cut) { this.speaking = false; this.pre = []; this.hot = 0; }
+    this.dbs = [];
+    if (voicedMs < o.minSpeechMs || !seg.length) return;
+    var n = 0; for (var i = 0; i < seg.length; i++) n += seg[i].length;
+    var pcm = new Float32Array(n), p = 0;
+    for (var j = 0; j < seg.length; j++) { pcm.set(seg[j], p); p += seg[j].length; }
+    this.onSegment(pcm, { voicedMs: voicedMs, cut: cut });
+  };
+  Vad.prototype.flush = function () { if (this.speaking && this.seg.length) { this.quiet = 0; this.end(false); } };
+
+  function encodeWav(pcm) {
+    var n = pcm.length, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+    function str(o, s) { for (var i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); }
+    str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVE');
+    str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, SR, true); v.setUint32(28, SR * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    str(36, 'data'); v.setUint32(40, n * 2, true);
+    for (var i = 0, o = 44; i < n; i++, o += 2) { var s = Math.max(-1, Math.min(1, pcm[i])); v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7FFF, true); }
+    return buf;
+  }
+
+  function fetchJson(url, init, ms) {
+    var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    if (ctl) init.signal = ctl.signal;
+    init.cache = 'no-store'; init.mode = 'cors'; init.credentials = 'omit';
+    var timer = null;
+    var timeout = new Promise(function (_, rej) { timer = setTimeout(function () { try { if (ctl) ctl.abort(); } catch (e) {} rej(err('net', 'Mac mini からの返事がありません（時間切れ）')); }, ms); });
+    return Promise.race([fetch(url, init).then(function (r) {
+      return r.text().then(function (tx) { var j = null; try { j = JSON.parse(tx); } catch (e) {} return { status: r.status, ok: r.ok, json: j }; });
+    }, function () { throw err('net', 'Mac mini に届きません（院内Wi-Fi・Mac mini の電源を確認）'); }), timeout])
+      .then(function (v) { clearTimeout(timer); return v; }, function (e) { clearTimeout(timer); throw e; });
+  }
+
+  function httpError(r) {
+    var msg = (r.json && r.json.error) || ('Mac mini がエラーを返しました（' + r.status + '）');
+    if (r.status === 401) return err('auth', '合言葉が違います（院内保管庫の設定を確認）');
+    if (r.status === 429) return err('auth', msg);
+    if (r.status === 503) return err('busy', msg);
+    if (r.status === 413) return err('too-long', msg);
+    return err('server', msg, { status: r.status });
+  }
+
+  function createStt(opts) {
+    opts = opts || {};
+    var o = {}; for (var k in DEF) o[k] = (opts[k] != null ? opts[k] : DEF[k]);
+    var noop = function () {};
+    var cb = { text: opts.onText || noop, state: opts.onState || noop, error: opts.onError || noop, level: opts.onLevel || noop, result: opts.onResult || noop };
+    var st = { running: false, state: 'stopped', ctx: null, stream: null, src: null, proc: null, sink: null, vad: null, rs: null,
+               queue: [], sending: false, seq: 0, gotAudio: 0, watch: null, stopping: false, lvl: 0, gen: 0 };
+
+    function conf() {
+      var c = lsGet(CFG_KEY) || {};
+      return { url: (opts.url || sttUrlFrom(c)).replace(/\/+$/, ''), token: opts.token || c.token || '' };
+    }
+    function setState(s, info) { st.state = s; try { cb.state(s, info || {}); } catch (e) {} }
+    // 聞くのを止める誤りでも、マイク側の誤りなら録り終えた発話は送る（声は正しく録れている）。届かない・合言葉違いは送っても無駄なので捨てる
+    function fail(e) { try { cb.error(e); } catch (x) {} if (e.fatal && st.running) teardown('error:' + e.kind, e.kind === 'net' || e.kind === 'auth'); }
+
+    function teardown(reason, dropQueue) {
+      st.running = false; st.gen++;
+      clearTimeout(st.watch);
+      try { if (st.proc) { st.proc.onaudioprocess = null; st.proc.disconnect(); } } catch (e) {}
+      try { if (st.src) st.src.disconnect(); } catch (e) {}
+      try { if (st.sink) st.sink.disconnect(); } catch (e) {}
+      try { if (st.stream) st.stream.getTracks().forEach(function (t) { t.onended = null; t.stop(); }); } catch (e) {}
+      try { if (st.ctx && st.ctx.close) st.ctx.close(); } catch (e) {}
+      st.proc = st.src = st.sink = st.stream = st.ctx = null;
+      if (dropQueue) st.queue = [];
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVis);
+      setState('stopped', { reason: reason });
+    }
+    function onVis() { if (document.hidden && st.running) { if (st.vad) st.vad.flush(); teardown('hidden', false); } }
+
+    function enqueue(pcm, info) {
+      st.queue.push({ wav: encodeWav(pcm), sec: pcm.length / SR, seq: ++st.seq, cut: info.cut });
+      pump();
+    }
+    function pump() {
+      if (st.sending || !st.queue.length) return;
+      var item = st.queue.shift();
+      st.sending = true;
+      var c = conf();
+      var t0 = Date.now();
+      var attempt = function (n) {
+        return fetchJson(c.url + '/v1/stt?hint=' + encodeURIComponent(opts.hint || 'perio'), {
+          method: 'POST', headers: { 'Authorization': 'Bearer ' + c.token, 'Content-Type': 'audio/wav' }, body: item.wav
+        }, o.timeoutMs).then(function (r) {
+          if (r.status === 503 && n === 0) return new Promise(function (res) { setTimeout(res, 800); }).then(function () { return attempt(1); });
+          return r;
+        });
+      };
+      attempt(0).then(function (r) {
+        if (!r.ok || !r.json || !r.json.ok) throw httpError(r);
+        var j = r.json, info = { sec: j.sec, ms: j.ms, wait: j.wait, rtt: Date.now() - t0, seq: item.seq, cut: item.cut, dropped: j.dropped || null };
+        try { cb.result({ text: j.text || '', info: info }); } catch (e) {}
+        if (j.text) { try { cb.text(j.text, info); } catch (e) {} }
+      }).catch(function (e) {
+        if (!e.kind) e = err('server', '聞き取りの途中でエラーが起きました');
+        if (e.fatal) st.queue = [];
+        fail(e);
+      }).then(function () { st.sending = false; pump(); });
+    }
+
+    function start() {
+      if (st.running) return Promise.resolve(true);
+      var sup = isSupported();
+      if (!sup.ok) { fail(err(sup.kind, sup.message)); return Promise.resolve(false); }
+      var c = conf();
+      if (!c.token) { fail(err('unconfigured', '院内保管庫の合言葉が未設定です（保管庫の設定で入れてください）')); return Promise.resolve(false); }
+      st.running = true; st.gotAudio = 0; var gen = ++st.gen;
+      setState('starting');
+      // iPad：音の部品はタップの中で作って動かす（await の後だと止まったままになることがある）
+      var AC = global.AudioContext || global.webkitAudioContext;
+      try { st.ctx = new AC(); if (st.ctx.resume) st.ctx.resume(); } catch (e) { teardown('error', true); fail(err('unsupported', '録音の準備ができませんでした')); return Promise.resolve(false); }
+      var cons = opts.constraints || { audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } };
+      return navigator.mediaDevices.getUserMedia(cons).then(function (stream) {
+        if (gen !== st.gen || !st.running) { stream.getTracks().forEach(function (t) { t.stop(); }); return false; }
+        st.stream = stream;
+        var ctx = st.ctx;
+        if (ctx.state !== 'running' && ctx.resume) ctx.resume();
+        st.src = ctx.createMediaStreamSource(stream);
+        st.proc = ctx.createScriptProcessor(4096, 1, 1);
+        st.sink = ctx.createGain(); st.sink.gain.value = 0;          // 音は鳴らさない（処理を動かすためだけにつなぐ）
+        st.rs = new Resampler();
+        st.vad = new Vad(o, function (pcm, info) { enqueue(pcm, info); });
+        var rest = new Float32Array(0), lvlN = 0, zeroSec = 0, everSound = false;
+        st.proc.onaudioprocess = function (ev) {
+          if (!st.running) return;
+          st.gotAudio++;
+          var x = ev.inputBuffer.getChannelData(0);
+          // 本物のマイクは静かでも小さな雑音がある。始めてから一度も音が来ないまま、まったくの 0 が3秒続いたら「音が来ていない」。
+          // 一度でも音が来た後は、0 が続いても知らせない（iPad の雑音消しが静かな間を 0 にすることがあるかもしれないため＝未確認）
+          if (!everSound) {
+            var allZero = true; for (var z = 0; z < x.length; z += 16) { if (x[z] !== 0) { allZero = false; break; } }
+            if (allZero) zeroSec += x.length / (ev.inputBuffer.sampleRate || ctx.sampleRate); else everSound = true;
+            if (zeroSec > 3) { everSound = true; fail(err('mic-busy', 'マイクの音が届いていません（もう一度🎤を押してください）')); return; }
+          }
+          var y = st.rs.push(new Float32Array(x), ev.inputBuffer.sampleRate || ctx.sampleRate);
+          var buf;
+          if (rest.length) { buf = new Float32Array(rest.length + y.length); buf.set(rest, 0); buf.set(y, rest.length); } else buf = y;
+          var i = 0;
+          for (; i + FRAME <= buf.length; i += FRAME) {
+            var was = st.vad.speaking;
+            st.vad.feed(buf.subarray(i, i + FRAME));
+            if (st.vad.speaking !== was && st.running) setState(st.vad.speaking ? 'speaking' : 'listening');
+            if (++lvlN % 5 === 0) { try { cb.level(Math.max(0, Math.min(1, (st.vad.lastDb + 60) / 50)), st.vad.speaking); } catch (e) {} }
+          }
+          rest = buf.slice(i);
+        };
+        st.src.connect(st.proc); st.proc.connect(st.sink); st.sink.connect(ctx.destination);
+        stream.getTracks().forEach(function (t) { t.onended = function () { if (st.running) fail(err('mic-busy', 'マイクが切れました（他のアプリが使っている・つなぎ直した）')); }; });
+        if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVis);
+        if (ctx.onstatechange !== undefined) ctx.onstatechange = function () {
+          if (!st.running || !st.ctx) return;
+          if (st.ctx.state !== 'running') { var p = st.ctx.resume && st.ctx.resume(); if (p && p.catch) p.catch(function () {}); }
+        };
+        st.watch = setTimeout(function () {
+          if (st.running && gen === st.gen && !st.gotAudio) fail(err('mic-busy', 'マイクの音が届いていません（もう一度🎤を押してください）'));
+        }, 2500);
+        setState('listening');
+        return true;
+      }, function (e) {
+        if (gen !== st.gen) return false;
+        var name = e && e.name;
+        var x = name === 'NotAllowedError' || name === 'SecurityError' ? err('mic-denied', 'マイクの使用が許可されていません（設定 → Safari → マイク、または表示された確認で「許可」）')
+          : name === 'NotFoundError' || name === 'OverconstrainedError' ? err('mic-missing', 'マイクが見つかりません')
+          : err('mic-busy', 'マイクを使えませんでした（他のアプリが使っているかもしれません）');
+        teardown('error:' + x.kind, true);
+        fail(x);
+        return false;
+      });
+    }
+
+    function stop() { if (!st.running) return; if (st.vad) st.vad.flush(); teardown('user', false); }
+    function abort() { st.queue = []; if (st.running) teardown('user', true); }
+
+    function check() {
+      var c = conf();
+      if (!c.token) return Promise.resolve({ ok: false, kind: 'unconfigured', message: '院内保管庫の合言葉が未設定です' });
+      return fetchJson(c.url + '/v1/ping', { method: 'GET' }, 8000).then(function (r) {
+        if (!r.ok || !r.json || r.json.name !== 'clinic-stt') throw err('net', 'Mac mini の音声の聞き取りが見つかりません（' + c.url + '）');
+        if (!r.json.ready) throw err('busy', r.json.error ? 'Mac mini の聞き取りの準備ができていません（' + r.json.error + '）' : '聞き取りの準備中です（少し待ってください）');
+        return fetchJson(c.url + '/v1/auth', { method: 'GET', headers: { 'Authorization': 'Bearer ' + c.token } }, 8000);
+      }).then(function (r) {
+        if (!r.ok) throw httpError(r);
+        return { ok: true, url: c.url };
+      }).catch(function (e) { return { ok: false, kind: e.kind || 'net', message: e.message, url: c.url }; });
+    }
+
+    return {
+      start: start, stop: stop, abort: abort, check: check,
+      get state() { return st.state; }, get running() { return st.running; }, get pending() { return st.queue.length + (st.sending ? 1 : 0); },
+      get url() { return conf().url; }
+    };
+  }
+  createStt.isSupported = isSupported;
+  createStt.sttUrlFrom = sttUrlFrom;
+  createStt._internals = { Resampler: Resampler, Vad: Vad, encodeWav: encodeWav, DEF: DEF };
+  global.createStt = createStt;
+})(typeof window !== 'undefined' ? window : this);
+/* STT-CLIENT:END */
+</script>
 </head>
 <body>
 <div id="topbars"></div>
@@ -1151,9 +1507,11 @@ const store={
 // ★PocketBase導入時：ミニPCでPBを起動し、下の url に院内サーバーのアドレスを入れるだけ。設定例：'http://192.168.1.50:8090'
 //   url='' のあいだは【端末内保存】。LOCAL.on=false でメモリのみに戻せる。
 const PB={url:''};
-const APP_VERSION='0.15.0';const DATA_SCHEMA=1;
+const APP_VERSION='0.16.0';const DATA_SCHEMA=1;
 // 更新内容（新しい順・アプリ内の「更新内容」とホームの「更新しました」に出す）
 const CHANGES=[
+  ['0.16.0','Mac mini で記録を共有できるように（3台の iPad で同じ記録。バックアップの画面の「🔄 Mac mini で記録を共有」で始める）。音声は院内の Mac mini で聞き取る形に（🎤を1回押せば止めるまで聞く。届かないときはキーボードのマイク）'],
+  ['0.15.1','速くした：テンキーを押したときの反応（押すたびに画面全体を計算し直していたのをやめた）・アプリを開くとき（手元に控えた版ですぐ開き、新しい版は裏で取ってくる）'],
   ['0.15.0','検査の画面を作り直し：テンキーは1つ（深さ／動揺度を上で切り替え、押すと次の歯へ）・出血は歯式のマスをタップ・ページをスクロールせずに入力できる。新しい検査は最初に欠損歯の登録（終わったら「🎤 声で入れる」か「テンキーで入れる」）。音声：「BOP」で出血の入力へ・「動揺」で動揺度の入力へ・「動揺は左上7と右下7が1で他はゼロ」「あとは全部0」'],
   ['0.14.2','音声入力：「右下さん」「右下サン」「右下産」のように歯の番号がかな・同じ読みの字で返っても「右下3」として読む'],
   ['0.14.1','音声入力：iPadのホーム画面アイコンでは「🎤 音声入力」でキーボードのマイクの欄が上に開き、話し終えて約1秒で入る（「入力」を押さなくてよい）。キーボードの音声入力が「死」「後」「サンサンニ」のように返しても数字として読む'],
@@ -1301,14 +1659,15 @@ function persistSkip(){return !storageProblem;}
 const TAB_MSG='このアプリが別の画面（タブ）で開かれているため、この画面では保存しませんでした。上の帯の「この画面で続ける」を押すか、もう一方の画面を使ってください。';
 function tabGuard(){if(!tabBlocked)return true;showErr(TAB_MSG);return false;}
 function persistDone(ok){if(ok){LOCAL.lastSavedAt=new Date().toISOString();try{if(vault)vault.markDirty();}catch(_){}scheduleStorageInfo();}return ok;}
+// 端末に書けたら、共有している iPad では変えた記録を Mac mini へ送る箱に入れる（rsNote*）
 async function persistPut(col,objs){if(!tabGuard())return false;if(netState!=='local')return persistSkip();const list=Array.isArray(objs)?objs:[objs];
-  return persistDone(LOCAL.backend==='idb'?await idbTx([col],tx=>{const os=tx.objectStore(col);list.forEach(o=>os.put(idbRec(col,o)));}):lsPersistAll());}
+  const ok=persistDone(LOCAL.backend==='idb'?await idbTx([col],tx=>{const os=tx.objectStore(col);list.forEach(o=>os.put(idbRec(col,o)));}):lsPersistAll());if(ok)rsNotePut(col,list);return ok;}
 async function persistDel(col,id){if(!tabGuard())return false;if(netState!=='local')return persistSkip();
-  return persistDone(LOCAL.backend==='idb'?await idbTx([col],tx=>tx.objectStore(col).delete(id)):lsPersistAll());}
+  const ok=persistDone(LOCAL.backend==='idb'?await idbTx([col],tx=>tx.objectStore(col).delete(id)):lsPersistAll());if(ok)rsNoteDel(col,[id]);return ok;}
 async function persistMeta(){if(!tabGuard())return false;if(netState!=='local')return persistSkip();
-  return persistDone(LOCAL.backend==='idb'?await idbTx(['meta'],tx=>{const m=tx.objectStore('meta');m.put(store.staff,'staff');m.put(store.clinic,'clinic');}):lsPersistAll());}
+  const ok=persistDone(LOCAL.backend==='idb'?await idbTx(['meta'],tx=>{const m=tx.objectStore('meta');m.put(store.staff,'staff');m.put(store.clinic,'clinic');}):lsPersistAll());if(ok)rsNoteMeta();return ok;}
 async function persistAll(info){if(!tabGuard())return false;if(netState!=='local')return persistSkip();
-  return persistDone(LOCAL.backend==='idb'?await idbReplaceAll(info):lsPersistAll());}
+  const ok=persistDone(LOCAL.backend==='idb'?await idbReplaceAll(info):lsPersistAll());if(ok)rsNoteAll();return ok;}
 
 // ── 起動時の読み込み ──
 const sameJSON=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
@@ -1526,7 +1885,7 @@ function initVault(){vault=createVault({app:'perio',label:'歯周検査',appVers
   // 保存時刻(savedAt)は外す：中身が同じなら Mac mini 側で重複として捨てられ、控えが無駄に増えない
   getSnapshot:()=>{if(vaultHold)throw new Error(vaultHold);const d=localPayload();delete d.savedAt;return {data:d,counts:{patients:store.patients.length,exams:store.exams.length,docs:store.docs.length}};},
   restore:async d=>{
-    if(tabBlocked)return {ok:false,message:TAB_MSG};const ck=restoreCheck(d);if(!ck.ok)return {ok:false,message:ck.msg};
+    if(tabBlocked)return {ok:false,message:TAB_MSG};if(rsWanted())return {ok:false,message:'この iPad は Mac mini で記録を共有しているため、復元できません。バックアップの画面で「この iPad の共有をやめる」を押してから復元してください。'};const ck=restoreCheck(d);if(!ck.ok)return {ok:false,message:ck.msg};
     await savePreRestore(); // 端末内にも直前の控え（Mac mini 側も復元前の控えを取る）
     if(!await applyLoadedAndSave(d,{keepStaff:true}))return {ok:false,message:'端末への保存に失敗しました（容量不足の可能性）。データは元のままです'};
     // 置き換えに成功してから、編集中の画面・患者フォームの入力と下書きを捨てる（復元した内容を古い入力で上書きしないように）
@@ -1598,6 +1957,8 @@ function helpHTML(sec){const verList=CHANGES.map(c=>`<div style="font-size:.84re
 let updateAvail=null,lastUpdCheck=0,tabBlocked=false,tabOther=false;
 const verGt=(a,b)=>{const pa=String(a).split('.').map(Number),pb=String(b).split('.').map(Number);for(let i=0;i<3;i++){if((pa[i]||0)!==(pb[i]||0))return (pa[i]||0)>(pb[i]||0);}return false;};
 function topBarsHTML(){const out=[];const bar=(bg,bd,fg,html)=>`<div class="topbar" style="background:${bg};border-color:${bd};color:${fg}">${html}</div>`;
+  if(RS.conf&&RS.conf.length)out.push(bar('#fef2f2','#fca5a5','#991b1b',`⚠ ほかの iPad の記録と食い違った入力が ${RS.conf.length} 件あります（Mac mini の方に合わせ、この iPad の入力は控えてあります）。<button class="tbtn" onclick="APP.go({name:'backup'})">見る</button>`));
+  if(rsWanted()&&RS.err&&RS.out&&Object.keys(RS.out).length)out.push(bar('#fffbeb','#fcd34d','#92400e',`Mac mini に送れていない記録が ${Object.keys(RS.out).length} 件あります（この iPad に控えてあります・つながったら送ります）。${esc(RS.err)}`));
   if(tabBlocked)out.push(bar('#fee2e2','#fca5a5','#991b1b',`⚠ このアプリが<b>別の画面（タブ）</b>で開かれたため、記録が食い違わないよう<b>この画面では保存しません</b>。<button class="tbtn" onclick="APP.tabTakeover()">この画面で続ける</button>`));
   else if(tabOther)out.push(bar('#fef3c7','#fcd34d','#92400e','⚠ このアプリが別の画面（タブ）でも開いています。古い方の画面は閉じてください（記録の食い違いを防ぐため、古い方では保存できなくなります）。'));
   if(updateAvail)out.push(bar('#eff6ff','#93c5fd','#1e3a8a',`🔄 新しい版 v${esc(updateAvail)} があります（今は v${APP_VERSION}）。<button class="tbtn" onclick="APP.applyUpdate()">更新する</button>`));
@@ -1660,7 +2021,7 @@ function startPrint(html,title,pageCss){clearPrint();document.getElementById('pg
   document.getElementById('print-area').innerHTML=html;printTitle=document.title;document.title=title;window.print();}
 window.addEventListener('afterprint',()=>{if(printTitle!=null){document.title=printTitle;printTitle=null;}});
 function toast(msg){const warn=/^⚠/.test(msg);const t=document.getElementById('toast');t.innerHTML='<div class="toast"'+(warn?' style="background:#b45309"':'')+'>'+(warn?'':'✅ ')+esc(msg)+'</div>';setTimeout(()=>{t.innerHTML='';},warn?2800:1500);}
-function render(){renderTopBars();
+function render(){renderTopBars();if(!(route&&route.name==='patientForm'))RS.edit={}; /* 画面を移ったら「直し始めた版」を捨てる（編集の画面は開くときにまた覚える） */
   if(route.name==='patientForm')return renderPatientForm(route.patientId);
   if(route.name==='patientDetail')return renderPatientDetail(route.patientId);
   if(route.name==='perio')return renderPerio(route.patientId,route.examId,route.type);
@@ -1734,6 +2095,7 @@ function renderPatientForm(pid){
     if(ex&&/^\d{4}-\d{2}-\d{2}$/.test(ex.birth||'')){const[y,m,d]=ex.birth.split('-').map(Number);const w=toWareki(y);bd={era:w.era,ey:w.ey,m,d};}
     else if(!ex){bd.era='昭和';}
     pf={_for:pid||'new',chartNo:ex?.chartNo||'',recNo:ex?.recNo||'',sei:ex?.sei||'',mei:ex?.mei||'',seiKana:ex?.seiKana||'',meiKana:ex?.meiKana||'',gender:ex?.gender||'',notes:ex?.notes||'',bd,birth:ex?.birth||'',errs:{},kanaLock:{seiKana:!!ex?.seiKana,meiKana:!!ex?.meiKana}};
+    if(ex)rsEditMark('patients',pid); // 直し始めたときの版（保存のときに別の iPad の変更を黙って上書きしない）
   }
   const westYear=b=>{const eo=eraObj(b.era);return(eo&&b.ey)?eo.start+b.ey-1:'';};
   const wy=westYear(pf.bd);const age=pf.birth?computeAge(pf.birth):null;
@@ -1880,6 +2242,7 @@ function renderBackup(){
         <p style="font-size:.74rem;color:var(--soft);margin:0 0 10px">レセコンの患者CSV（予約CSVでも可・全患者分）を読み込むと、新規登録でカルテ番号を入れるだけで氏名・生年月日が入り、ホームの検索でもまだ登録していない人が出ます。患者一覧には出ません。名簿はこの端末の中だけに置き、バックアップ・Mac mini には入れません（iPadごとに読み込み・<b>毎月など定期的に読み込み直してください</b>）。</p>
         <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="nb" style="font-weight:700" onclick="APP.rosterOpen()">📖 名簿を読み込む（置き換え）</button>${roster?'<button class="nb danger" onclick="APP.rosterClear()">名簿を消す</button>':''}<button class="nb" onclick="APP.openImport()">📥 CSVの患者を患者一覧にまとめて登録（従来）</button></div>
       </div>
+      ${rsCardHTML()}
       <div id="vault-mount"></div>
       <button class="linkbtn danger" style="display:block;margin:26px auto 0" onclick="APP.bkWipe()">🗑 全データ初期化（すべて消してまっさらにする）</button>
       <p class="note">見本の患者だけを消すときは、ホームの「🧹 見本の患者を消す」を使ってください。</p>
@@ -2735,7 +3098,7 @@ function vApply(res,rawText){
   else{if(pe.sel!=null&&vc.cursor==null&&ok&&willEdit)pe.done=true;
     pe.sel=vc.cursor;if(pe.sel!=null)pe.done=false;}
   refreshArch();updateStats();
-  if(vc.cursor){const el=document.querySelectorAll('.tooth')[ORDER.indexOf(vc.cursor)];if(el)el.scrollIntoView({inline:'center',block:'nearest'});}
+  if(vc.cursor)tileIntoView(vc.cursor);
   renderEditor();
   // フィードバック
   if(vc.sound)vBeep(rej===0&&ok>0);
@@ -2782,6 +3145,10 @@ function vQuadKana(s){let out='',i=0,m;const re=/(右上|左上|右下|左下)/g
     const tail=rest.slice(j);
     if(num&&(!tail||/^(?:は|が|から|迄|欠損|出血|排膿|なし|へ|[0-9]|右上|左上|右下|左下|と|、)/.test(tail))){out+=num;i=st+j;re.lastIndex=i;}}
   return out+s.slice(i);}
+// 歯番のすぐ後ろ：Whisper は「右上4は5」を「右上4歯後」のように返す（は→歯・数字→同じ読みの字）。歯番＋「歯」は「は」、その後ろが数字1つ分の字だけなら数字に
+// 言葉を削る前（vNorm の前）の文で見る：「右上4は後で」（あとで）を5にしない
+function vQuadTail(s){s=s.replace(/((?:右上|左上|右下|左下)[、,\s]*[1-8]+)歯/g,'$1は');
+  return s.replace(/((?:右上|左上|右下|左下)[、,\s]*[1-8]+は)([^0-9、。\s]{1,3})[。．.！!]*$/,(m,a,b)=>{const h=V_HOMO.find(([w])=>w===b);if(h)return a+h[1];const r=vKanaRun(b);return r!=null&&/^(?:1[0-5]|[0-9])$/.test(r)?a+r:m;});}
 function vKanaRun(s){ // 全部が数字（かな含む）なら算用数字の並びを返す。そうでなければ null
   const J={'じゅう':'10','じゅういち':'11','じゅうに':'12','じゅうさん':'13','じゅうよん':'14','じゅうご':'15'};if(J[s])return J[s];
   let out='',i=0,conv=false,homoN=0;
@@ -2802,7 +3169,7 @@ function vInterpret(raw,mode){
   if(new RegExp('(?:は|が)\\s*\\d\\s*[、,。]?\\s*'+FL+'\\s*[、,。]?\\s*\\d').test(pre)||/\d\s*[、,。]?\s*(?:あー*|おっと)\s*[、,。]?\s*\d/.test(pre))
     return{s:pre,res:null,bad:'（言い直しのように聞こえたため入力しませんでした。もう一度どうぞ）'};
   const sep=/\d[\s、,，。.・]+\d/.test(pre); // 「1 2」「1、2」＝区切りのある数字（12mm にまとめない）
-  let s=vQuadKana(vNorm(pre));
+  let s=vQuadKana(vNorm(vQuadTail(pre)));
   s=s.replace(/(右上|左上|右下|左下)([1-8])へ/g,'$1$2').replace(/(出血|排膿|深さ|ポケット|動揺度?)モード/g,'$1'); // 「右上5へ」「出血モード」は正式な言い方
   s=s.replace(/(右上|左上|右下|左下)([1-8])(?:は|が)欠損/g,'$1$2欠損'); // 「右下6は欠損」
   s=s.replace(/^(動揺度?|深さ|ポケット)は(?=右上|左上|右下|左下|すべて|全て|全部|その他|他|ほか|残り|あと)/,'$1'); // 「動揺は左上7…」
@@ -2886,7 +3253,8 @@ function vSyncStart(){if(pe.tapMode&&pe.tapMode!=='bop')APP.setTapMode(pe.tapMod
 function vStart(){if(pe&&pe.intro)APP.introDone(''); /* 欠損の登録の案内中に話し始めたら案内を終える（歯のタップが欠損の切り替えのままにならないように） */
   if(!pe||pe.readOnly||!hasVoice(pe.type))return;
   vc.err='';const d=vDiag();
-  if(!vc.avail){
+  const eng=voiceEngine();
+  if(eng!=='mini'&&!vc.avail){
     vc.err=d.standalone?'この開き方（ホーム画面のアイコン）では音声認識が使えません。テンキーで入力するか、「🎤 音声入力」でキーボードのマイクの欄を開いて話してください（記録はこのアイコンのまま続けてください）。'
       :d.otherBrowser?'iOSではChrome等では音声認識が使えません。テンキーで入力してください。'
       :d.inApp?'アプリ内ブラウザでは動きません。テンキーで入力してください。'
@@ -2899,14 +3267,34 @@ function vStart(){if(pe&&pe.intro)APP.introDone(''); /* 欠損の登録の案内
   // iPad はタップの中で音を鳴らす準備をしないと「ピッ」が鳴らない
   try{vAudioCtx=vAudioCtx||new (window.AudioContext||window.webkitAudioContext)();if(vAudioCtx.resume)vAudioCtx.resume();}catch(_){}
   // 開始時にカーソル位置を歯式へ表示（次に入る歯が分かるように）
-  if(vc.cursor!=null){pe.sel=vc.cursor;refreshArch();renderEditor();const el=document.querySelectorAll('.tooth')[ORDER.indexOf(vc.cursor)];if(el)el.scrollIntoView({inline:'center',block:'nearest'});}
+  if(vc.cursor!=null){pe.sel=vc.cursor;refreshArch();renderEditor();tileIntoView(vc.cursor);}
   // ★iOS Safari は「タップと同じ同期フロー内」で start() を呼ぶ必要がある。
   //   getUserMedia 等を挟んで待つとジェスチャ文脈が切れて not-allowed になる。
-  if(!vc.engine)vc.engine=vMakeEngine();
+  const want=eng==='mini'?'mini':'browser';if(!vc.engine||(vc.engine.kind||'browser')!==want)vc.engine=want==='mini'?vMakeMiniEngine():vMakeEngine();
   vc.active=true;
   try{vc.engine.start();}catch(_){/* 連打時の InvalidStateError は無視 */}
   vRefreshPanel();
 }
+// 聞き取り方：'mini'＝院内の Mac mini（ボタン1回で止めるまで聞く・v0.16）／'kbd'＝キーボードのマイク／'browser'＝ブラウザの音声認識。
+// 選んだもの（perio_voice_engine）が無ければ、Mac mini が答えれば mini、だめならこれまでどおり（キーボード／ブラウザ）
+function voiceEngine(){let p=null;try{p=localStorage.getItem('perio_voice_engine');}catch(_){}
+  if(p==='mini'&&vc.miniOk!==false&&typeof createStt==='function')return 'mini';
+  if(p==='kbd')return 'kbd';if(p==='browser'&&vc.avail)return 'browser';
+  if(vc.miniOk===true&&typeof createStt==='function')return 'mini';
+  if(vc.miniOk===false&&p==='mini')return 'kbd'; // Mac mini に届かなかった後はキーボードのマイクで続ける
+  return useKbdVoice()?'kbd':'browser';}
+// Mac mini が使えるか（住所・合言葉・聞き取りの準備）を起動時に1回確かめる（声は送らない）
+function sttProbe(){if(vc.miniOk!=null||typeof createStt!=='function'||typeof location==='undefined'||location.protocol!=='https:')return;
+  try{if(!createStt.isSupported().ok){vc.miniOk=false;return;}vc.miniOk=null;createStt({hint:'perio'}).check().then(r=>{vc.miniOk=!!(r&&r.ok);vc.miniMsg=r&&!r.ok?r.message||'':'';vRefreshPanel();}).catch(()=>{vc.miniOk=false;});}catch(_){vc.miniOk=false;}}
+function vMakeMiniEngine(){let want=false;
+  const s=createStt({hint:'perio',
+    onText:t=>{if(!want||!vc.active)return;vc.heard=t;vc.heardFinal=true;vHandle(t);}, // 止めた後に届いた分は入れない（ブラウザの音声認識と同じ）
+    onState:(st)=>{if(st==='speaking'){vc.heard='（聞いています…）';vc.heardFinal=false;vUpdateHeard();}
+      else if(st==='stopped'&&want){want=false;vc.active=false;vRefreshPanel();}},
+    onError:err=>{if(err&&err.fatal){want=false;vc.active=false;if(err.kind==='net'||err.kind==='unconfigured'||err.kind==='auth')vc.miniOk=false;
+        vc.err='Mac mini の聞き取り：'+(err.message||err.kind)+'。'+(vc.miniOk===false?'もう一度「🎤 音声入力」を押すと、キーボードのマイクで話せます。':'');}
+      else vc.err='Mac mini の聞き取り：'+((err&&err.message)||'');vRefreshPanel();}});
+  return {kind:'mini',start(){want=true;vc.err='';s.start();},stop(){want=false;try{s.abort();}catch(_){}}};}
 // キーボードのマイク（音声入力）を使うか：ホーム画面のアイコンやブラウザの音声認識が無いときは既定でこちら。パネルで切り替えられる
 function useKbdVoice(){if(vc.kbd!=null)return vc.kbd;let v=null;try{v=localStorage.getItem('perio_voice_kbd');}catch(_){}if(v==='1'||v==='0'){vc.kbd=v==='1';return vc.kbd;}return !vc.avail||isStandalone();}
 const DICT_WAIT=1000;let dictTimer=null,dictCommitted='';
@@ -2952,10 +3340,10 @@ function vPanelHTML(){
       ${opt(vc.sound,'確認音','vOptSound')}${opt(vc.echo,'読み上げ','vOptEcho')}
     </div>
     <div style="margin-top:10px;font-size:.78rem;color:var(--soft);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-      <span>聞き取り方：<b style="color:var(--ink)">${useKbdVoice()?'キーボードのマイク（上の欄に話す）':'ブラウザの音声認識'}</b></span>
-      ${vc.avail?`<button class="tog" style="padding:7px 12px;font-size:.78rem" onclick="APP.vUseBrowser()">${useKbdVoice()?'ブラウザの音声認識に切り替える':'キーボードのマイクに切り替える'}</button>`:''}
+      <span>聞き取り方：</span>${(()=>{const e=voiceEngine();const b=(k,l,ok)=>ok?`<button class="tog" style="padding:7px 12px;font-size:.78rem;${e===k?'background:var(--blue);border-color:var(--blue);color:#fff':''}" onclick="APP.vUseEngine('${k}')">${l}</button>`:'';
+        return b('mini','院内の Mac mini',typeof createStt==='function')+b('kbd','キーボードのマイク',true)+b('browser','ブラウザの音声認識',vc.avail);})()}
     </div>
-    <div style="margin-top:6px;font-size:.72rem;color:var(--soft)">ホーム画面のアイコンから開いたときは、キーボードのマイクを使います（ブラウザの音声認識が動かないため）。</div>
+    <div style="margin-top:6px;font-size:.72rem;color:var(--soft)">${vc.miniOk===true?'Mac mini：つながっています。🎤を1回押せば、止めるまで聞き続けます。':vc.miniOk===false?'Mac mini：つながりません'+(vc.miniMsg?'（'+esc(vc.miniMsg)+'）':'')+'。キーボードのマイクで話せます。':'Mac mini：確かめています…'}</div>
     ${vc.err?`<details style="margin-top:6px;font-size:.66rem;color:var(--soft)"><summary>診断の情報（院長向け）</summary>認識API=${window.SpeechRecognition?'標準':window.webkitSpeechRecognition?'webkit':'なし'} / 通信=${navigator.onLine?'オン':'オフ'} / ${isStandalone()?'ホーム画面アプリ':'ブラウザ'} / ${esc((navigator.userAgent.match(/(iPhone|iPad|Macintosh)[^)]*/)||['?'])[0])}</details>`:''}
     ${vc.log.length?`<div style="margin-top:10px;font-size:.7rem;color:var(--soft);border-top:1px solid var(--line2);padding-top:8px">
       ${vc.log.map(l=>`<div style="display:flex;gap:8px;padding:2px 0"><span style="color:var(--faint);flex:0 0 45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">「${esc(l.raw)}」</span><span style="${l.rej?'color:var(--warn)':''}">→ ${esc(l.note)}</span></div>`).join('')}
@@ -2997,7 +3385,7 @@ function renderPerio(pid,examId,newType){
       carriedIn:fixed?(fixed.carried||[]).slice():null,   // 保存済み検査の「前回値のまま」の歯
       createdAt:fixed?fixed.createdAt:null,rev:fixed?(fixed.rev||0):0,updatedAt:fixed?fixed.updatedAt:null,
       lastEntry:null,prevTooth:null,done:false,findings:Object.assign(freshFindings(),fixed&&fixed.findings||{})};
-  pe.orig={date:pe.date,examiner:pe.examiner}; // 一つ戻すで元の状態に戻ったかの判定用
+  pe.orig={date:pe.date,examiner:pe.examiner};if(fixed&&!readOnly)rsEditMark('exams',fixed.id); // 一つ戻すで元の状態に戻ったかの判定用
   // 下書きから再開（前回値・変更マークの基準は通常どおり。値だけ下書きに置き換え、未保存として扱う）
   if(dr){pe.teeth=normalizeTeeth(dr.teeth);if(dr.date)pe.date=dr.date;pe.examiner=dr.examiner||'';pe.dirty=true;drafts.exam=dr;if(dr.findings)pe.findings=Object.assign(freshFindings(),dr.findings);
     if(dr.touch)TOUCH_KEYS.forEach(k=>{pe.touch[k]=new Set((dr.touch[k]||[]).map(Number));});
@@ -3194,10 +3582,12 @@ function voiceToPad(m){if(!pe||pe.readOnly)return;
     if(['bop','pus','none'].includes(vc.bopKind))pe.bopPaint=vc.bopKind;}
   else if(m==='ppd'||m==='mob'){if(pe.tapMode){pe.tapMode=null;pe.tapReturn=null;pe.intro=false;}pe.padMode=m;}}
 function refreshMissBar(){
-  if(pe.type!=='mixed'&&document.getElementById('editor')){const p=document.getElementById('ed-pad');if(p)p.innerHTML=padHTML();const i=document.getElementById('ed-info');if(i)i.innerHTML=infoHTML();}
-  else{const el=document.getElementById('missbar');if(el)el.innerHTML=missBarHTML();}
+  if(uiDepth>0)uiPend.mb=true;else refreshMissBarNow();
   const card=document.getElementById('arch-card');if(card){card.style.boxShadow=pe.intro&&pe.tapMode?'0 0 0 3px #f59e0b':pe.tapMode?'0 0 0 2px '+({bop:'#dc2626',mob:'#374151',miss:'#64748b',prim:'#6d28d9'}[pe.tapMode]):'';
     if(card.classList)card.classList.toggle('intro',!!(pe.intro&&pe.tapMode));}}
+function refreshMissBarNow(){if(!pe)return;
+  if(pe.type!=='mixed'&&document.getElementById('editor')){const p=document.getElementById('ed-pad');if(p)p.innerHTML=padHTML();const i=document.getElementById('ed-info');if(i)i.innerHTML=infoHTML();}
+  else{const el=document.getElementById('missbar');if(el)el.innerHTML=missBarHTML();}}
 function toothHTML(n){
   const t=pe.teeth[n];const prim=!!t.primary;const mx=toothMaxPpd(t);const sev=(t.missing||prim)?null:sevOf(mx);
   let bg='#fff';let pcol='#c0cad4';
@@ -3321,7 +3711,7 @@ function padHTML(){
     return bar+`<div class="pad" data-pad="4">${p('bop','＋ 出血（赤）','#dc2626')}${p('pus','排膿（青）','#2563eb')}${p('none','− 消す','#64748b')}<button class="k-op k-w2" onclick="APP.setMode('${pm}')">✓ 終わる</button>${undo}</div>`;}
   if(tm==='miss'&&pe.intro){const v=hasVoice(pe.type);
     return bar+`<div class="pad" data-pad="4"><div class="k-hint k-w4${v?'':' k-h2'}">欠損の登録が終わったら、入れ方を選んでください。</div>`
-      +(v?`<button class="k-op k-w4 k-voice" onclick="APP.introDone('voice')">🎤 声で入れる<small>キーボードのマイクを押して話す</small></button>`:'')
+      +(v?`<button class="k-op k-w4 k-voice" onclick="APP.introDone('voice')">🎤 声で入れる<small>${voiceEngine()==='mini'?'押したらそのまま話す':'キーボードのマイクを押して話す'}</small></button>`:'')
       +`<button class="k-op k-w4 k-go" onclick="APP.introDone('pad')">テンキーで入れる →<small>${pe.type==='precision'?'6点法・':''}最初の歯から</small></button>${undo.replace('k-w2','k-w4')}</div>`;}
   if(tm==='miss'||tm==='prim'){const c=tm==='miss'?ORDER.filter(x=>pe.teeth[x].missing).length:ORDER.filter(x=>pe.teeth[x].primary&&!pe.teeth[x].missing).length;
     return bar+`<div class="pad" data-pad="4"><div class="k-hint k-w4 k-h3">${tm==='miss'?`🦷 <b>歯式のマスをタップ</b>で 欠損 ⇄ 戻す<span>欠損 <b class="mono">${c}</b> 歯</span>`:`🍼 <b>1〜5番の歯をタップ</b>で 乳歯 ⇄ 永久歯<span>乳歯 <b class="mono">${c}</b> 本</span>`}</div><button class="k-op k-w2" onclick="APP.setMode('${pm}')">✓ 終わる</button>${undo}</div>`;}
@@ -3342,7 +3732,16 @@ function padHTML(){
 function cur10(n){const t=n!=null?pe.teeth[n]:null;if(!t||t.missing)return null;
   if(pe.type==='precision')return touchSet('site').has(n*10+pe.site)&&t.ppd6?t.ppd6[pe.site]:null;
   return touchSet('ppd').has(n)?t.ppd:null;}
-function renderEditor(){
+// 選んだ歯が画面の外にあるときだけ見える所へ（歯式はふつう全部見えている。毎回 scrollIntoView を呼ぶと1回押すたびに画面全体の計算が走って遅くなった）
+function tileIntoView(n){if(typeof requestAnimationFrame!=='function')return;requestAnimationFrame(()=>{const el=document.querySelectorAll('.tooth')[ORDER.indexOf(n)];if(!el||!el.getBoundingClientRect)return;
+  const r=el.getBoundingClientRect();if(r.top<0||r.left<0||r.bottom>window.innerHeight||r.right>window.innerWidth)el.scrollIntoView({block:'nearest',inline:'nearest'});});}
+// 操作盤の描き直しは、1回の操作（APP.*）の中では最後に1回だけ（v0.15.1。以前は1回押すたびに3回作り直していた）
+let uiDepth=0;const uiPend={ed:false,mb:false};
+function uiFlush(){if(!pe){uiPend.ed=uiPend.mb=false;return;}const ed=uiPend.ed,mb=uiPend.mb;uiPend.ed=uiPend.mb=false;
+  if(ed)renderEditorNow();if(mb&&(!ed||!document.getElementById('editor')))refreshMissBarNow();} // 操作盤を作り直せばテンキーの上の切替も新しくなる
+function uiBatch(fn){return function(){uiDepth++;try{return fn.apply(this,arguments);}finally{if(--uiDepth===0&&(uiPend.ed||uiPend.mb))uiFlush();}};}
+function renderEditor(){if(uiDepth>0){uiPend.ed=true;return;}renderEditorNow();}
+function renderEditorNow(){
   const ed=document.getElementById('editor');if(!ed)return;
   ed.innerHTML=`<div class="card ed-info" id="ed-info">${infoHTML()}</div>${pbHTML()}<div class="card ed-pad" id="ed-pad">${padHTML()}</div>`;
 }
@@ -3416,8 +3815,149 @@ function draftGuard(kind){const d=drafts[kind];if(!d)return true;
 async function persistBatch(op){if(!tabGuard())return false;if(netState!=='local')return persistSkip();
   if(LOCAL.backend!=='idb')return persistDone(lsPersistAll());
   const cols=[...new Set([...Object.keys(op.put||{}),...Object.keys(op.del||{})])];
-  return persistDone(await idbTx(cols,tx=>{Object.entries(op.put||{}).forEach(([c,list])=>{const os=tx.objectStore(c);list.forEach(o=>os.put(idbRec(c,o)));});
-    Object.entries(op.del||{}).forEach(([c,ids])=>{const os=tx.objectStore(c);ids.forEach(id=>os.delete(id));});}));}
+  const ok=persistDone(await idbTx(cols,tx=>{Object.entries(op.put||{}).forEach(([c,list])=>{const os=tx.objectStore(c);list.forEach(o=>os.put(idbRec(c,o)));});
+    Object.entries(op.del||{}).forEach(([c,ids])=>{const os=tx.objectStore(c);ids.forEach(id=>os.delete(id));});}));
+  if(ok){Object.entries(op.put||{}).forEach(([c,list])=>rsNotePut(c,list));Object.entries(op.del||{}).forEach(([c,ids])=>rsNoteDel(c,ids));}return ok;}
+// ── Mac mini で記録を共有（v0.16・院長の決定 2026-10-27：3台の iPad で同じ記録）──
+// 端末に保存できたら、変えた記録だけを院内保管庫（Mac mini）の /v1/rec/perio へ1件ずつ送る。送れない間は「送る箱」（kv rsync_out）に残す。
+// 開いたとき・画面に戻ったとき・20秒ごとに、ほかの iPad が直した分を受け取る。記録は1件ずつ版（ver）を持ち、古い版の上に書こうとすると Mac mini が断る（409）。
+// 食い違ったら Mac mini の方に合わせ、この iPad の入力は控え（kv rsync_conf・この iPad の中だけ）に残して赤い帯で知らせる。
+// 見本の患者・下書き・患者名簿は送らない。住所と合言葉は院内保管庫の設定（vault.cfg）。共有は院長がバックアップの画面で始める（perio_share）。
+const RS={busy:false,again:false,timer:null,st:null,out:null,conf:null,loaded:false,lastOk:null,err:'',iv:null,edit:{}};
+const RS_COL={patients:'p',exams:'e',docs:'d'},RS_COLR={p:'patients',e:'exams',d:'docs'},RS_META={staff:'perio:m:staff',clinic:'perio:m:clinic'};
+function rsCfg(){try{const c=JSON.parse(localStorage.getItem('vault.cfg')||'null');return c&&typeof c.url==='string'&&c.url&&typeof c.token==='string'&&c.token?c:null;}catch(_){return null;}}
+function rsWanted(){try{return localStorage.getItem('perio_share')==='1';}catch(_){return false;}}
+function rsEnabled(){return rsWanted()&&!!rsCfg()&&LOCAL.backend==='idb'&&netState==='local'&&!storageProblem&&!tabBlocked;}
+function rsHash(s){let a=0x811c9dc5,b=0x2545f491;for(let i=0;i<s.length;i++){const c=s.charCodeAt(i);a=Math.imul(a^c,16777619);b=Math.imul(b^c,2246822507)+c;}return (a>>>0).toString(36)+(b>>>0).toString(36)+s.length.toString(36);}
+const rsWid=()=>Math.random().toString(36).slice(2,10)+Date.now().toString(36);
+const rsKey=(col,id)=>'perio:'+RS_COL[col]+':'+id;
+const rsIsSample=(col,o)=>col==='patients'?SAMPLE_PIDS.has(o.id):(SAMPLE_PIDS.has(o.patientId)||SAMPLE_EIDS.has(o.id));
+async function rsLoad(){if(RS.loaded)return;const st=await kvGet('rsync');RS.st=st&&typeof st==='object'&&st.vers?st:{epoch:'',seq:0,vers:{},hs:{}};
+  const o=await kvGet('rsync_out');RS.out=o&&typeof o==='object'?o:{};const c=await kvGet('rsync_conf');RS.conf=Array.isArray(c)?c:[];RS.loaded=true;}
+async function rsSave(){return (await kvPut('rsync',RS.st))&&(await kvPut('rsync_out',RS.out))&&(await kvPut('rsync_conf',RS.conf));}
+// この iPad の今の記録（キー→送る文字）。見本は入れない
+const rsSampleStaff=x=>x&&(x.id==='st1'&&x.name==='衛生士A'||x.id==='st2'&&x.name==='衛生士B');
+const rsStaffVal=()=>JSON.stringify((store.staff||[]).filter(x=>!rsSampleStaff(x)));
+function rsLocalMap(){const m=new Map();Object.keys(RS_COL).forEach(col=>store[col].forEach(o=>{if(o&&o.id!=null&&!rsIsSample(col,o))m.set(rsKey(col,o.id),JSON.stringify(o));}));
+  m.set(RS_META.staff,rsStaffVal());m.set(RS_META.clinic,JSON.stringify(store.clinic||{}));return m;}
+// この iPad の今の1件（送る形の文字）。無い・見本は null
+function rsLocalVal(key){const m=/^perio:([ped]|m):(.+)$/.exec(key);if(!m)return null;if(m[1]==='m')return m[2]==='staff'?rsStaffVal():m[2]==='clinic'?JSON.stringify(store.clinic||{}):null;
+  const col=RS_COLR[m[1]],o=store[col].find(x=>x&&x.id===m[2]);return o&&!rsIsSample(col,o)?JSON.stringify(o):null;}
+// 直し始めたときの Mac mini の版（検査の編集・文書・患者情報の画面を開いたとき）。保存したらこの版で確かめる＝開いている間に別の iPad が直した分を黙って上書きしない
+function rsEditMark(col,id){try{if(RS.st&&id!=null)RS.edit[rsKey(col,id)]=RS.st.vers[rsKey(col,id)]||0;}catch(_){}}
+// 送る箱に入れる（val＝null は消した）。Mac mini と同じ中身なら入れない
+function rsQueue(key,val){const h=val==null?'':rsHash(val);const prev=RS.out[key];const mark=Object.prototype.hasOwnProperty.call(RS.edit,key)?RS.edit[key]:null;delete RS.edit[key];
+  if(!prev&&mark==null&&(RS.st.hs[key]||'')===h&&(val!=null||RS.st.vers[key]))return;
+  if(val==null&&!prev&&!RS.st.vers[key])return; // Mac mini に無い記録を消した＝送る物なし
+  // 送り直しのときは前の書き込み番号も覚えておく（返事が途中で消えた自分の書き込みを、別の iPad の書き込みと見間違えないように）
+  RS.out[key]={v:val,base:prev?prev.base:(mark!=null?mark:(RS.st.vers[key]||0)),wid:rsWid(),wids:prev?(prev.wids||[]).concat(prev.wid).slice(-20):[]};}
+// 合言葉が無い間・つながらない間も、共有している iPad なら送る箱には入れる（設定したら送る）
+async function rsNote(fn){if(!(rsWanted()&&LOCAL.backend==='idb'&&netState==='local'))return;try{await rsLoad();fn();await rsSave();rsSoon();}catch(_){}}
+const rsNotePut=(col,list)=>rsNote(()=>list.forEach(o=>{if(o&&o.id!=null&&!rsIsSample(col,o))rsQueue(rsKey(col,o.id),JSON.stringify(o));}));
+const rsNoteDel=(col,ids)=>rsNote(()=>ids.forEach(id=>rsQueue(rsKey(col,id),null)));
+const rsNoteMeta=()=>rsNote(()=>{rsQueue(RS_META.staff,rsStaffVal());rsQueue(RS_META.clinic,JSON.stringify(store.clinic||{}));});
+// 全部を書き直した（見本を消す など）：担当者の一覧と医院情報だけ送る。消した印は送らない（1台の置き換えでほかの iPad の記録を消さない。復元・初期化は共有中はできない＝rsBlockBulk）
+const rsNoteAll=()=>rsNote(()=>{rsQueue(RS_META.staff,rsStaffVal());rsQueue(RS_META.clinic,JSON.stringify(store.clinic||{}));}); // 患者・検査・文書は送らない（古い控えの中身でほかの iPad の新しい記録を上書きしない）
+// 共有中の iPad では、復元・初期化をさせない（ほかの iPad の記録まで変わるため）。先に共有をやめてもらう
+function rsBlockBulk(what){if(!rsWanted())return false;alert(`この iPad は Mac mini で記録を共有しているため、${what}できません（ほかの iPad の記録まで変わるため）。\nバックアップの画面で「この iPad の共有をやめる」を押してから${what}してください。共有を始め直すと Mac mini の記録と合わせます（違う記録は、この iPad の分を控えに残します）。`);return true;}
+function rsSoon(ms){clearTimeout(RS.timer);RS.timer=setTimeout(()=>{rsSync();},ms==null?800:ms);}
+// Mac mini から来た1件をこの iPad に入れる（形を確かめてから）。中身が変わったら true
+async function rsApply(key,val){const m=/^perio:([ped]|m):(.+)$/.exec(key);if(!m)return null;
+  if(m[1]==='m'){const k=m[2];if(k!=='staff'&&k!=='clinic'||val==null)return null;let v;try{v=JSON.parse(val);}catch(_){return null;}
+    const s=sanitizeLoaded(k==='staff'?{staff:v}:{clinic:v});const cur=JSON.stringify(k==='staff'?store.staff:store.clinic);
+    if(k==='staff'){if(!Array.isArray(v))return null;const nx=s.staff.concat((store.staff||[]).filter(rsSampleStaff).filter(x=>!s.staff.some(y=>y.id===x.id)));if(JSON.stringify(nx)===cur)return false;store.staff=nx;}
+    else{if(!s.clinic)return null;if(JSON.stringify(s.clinic)===cur)return false;Object.keys(store.clinic).forEach(x=>delete store.clinic[x]);Object.assign(store.clinic,s.clinic);}
+    await idbTx(['meta'],tx=>{const o=tx.objectStore('meta');o.put(store.staff,'staff');o.put(store.clinic,'clinic');});return true;}
+  const col=RS_COLR[m[1]],id=m[2];const arr=store[col];const i=arr.findIndex(o=>o&&o.id===id);
+  if(val==null){if(i<0)return false;
+    if(col==='patients'&&(store.exams.some(e=>e.patientId===id)||store.docs.some(d=>d.patientId===id)))return 'keep'; // 別の iPad が消した患者に、この iPad の検査・文書がある＝患者を残す
+    arr.splice(i,1);await idbTx([col],tx=>tx.objectStore(col).delete(id));return true;}
+  let v;try{v=JSON.parse(val);}catch(_){return null;}if(!v||typeof v!=='object'||v.id!==id)return null;
+  const s=sanitizeLoaded(col==='patients'?{patients:[v]}:{patients:store.patients,[col]:[v]});const o=(s[col]||[]).find(x=>x.id===id);if(!o)return null;
+  if(i>=0&&JSON.stringify(arr[i])===JSON.stringify(o))return false;
+  if(i>=0)arr[i]=o;else arr.push(o);await idbTx([col],tx=>tx.objectStore(col).put(idbRec(col,o)));
+  // 2台で同時に新しい患者を登録すると患者番号（#0001 など）が重なる：id の大きい方を次の番号にする（どの iPad でも同じ患者・同じ番号になる）
+  if(col==='patients'&&o.no){const other=store.patients.find(x=>x.id!==o.id&&x.no===o.no);
+    if(other){const loser=o.id>other.id?o:other;loser.no=store.nextNo();await persistPut('patients',loser);}}
+  return true;}
+// 食い違い：Mac mini の方に合わせ、この iPad の入力を控えに残す（最大50件）
+function rsKeepConflict(key,mine,theirs){RS.conf.unshift({key,mine,theirs,at:new Date().toISOString()});} // 件数で消さない（控えは院長が見て消す）
+function rsFetch(url,opt){const ctl=typeof AbortController!=='undefined'?new AbortController():null;const t=setTimeout(()=>{try{ctl&&ctl.abort();}catch(_){}},15000);
+  return fetch(url,Object.assign({cache:'no-store',signal:ctl?ctl.signal:undefined},opt)).finally(()=>clearTimeout(t));}
+async function rsSync(){if(!rsEnabled())return;if(RS.busy){RS.again=true;return;}RS.busy=true;let changed=false;
+  try{await rsLoad();const c=rsCfg();const base=c.url.replace(/\/+$/,'')+'/v1/rec/perio';const H={'Authorization':'Bearer '+c.token};
+    // 1) 送る箱の中身を送る
+    const pushAll=async()=>{
+    let nput=0;
+    for(const key of Object.keys(RS.out)){let o=RS.out[key];if(!o)continue;
+      for(let tries=0;tries<3;tries++){o=RS.out[key];if(!o)break;
+        const r=await rsFetch(base+'/'+encodeURIComponent(key),{method:'PUT',headers:Object.assign({'Content-Type':'application/json'},H),body:JSON.stringify({value:o.v,ver:o.base,wid:o.wid,by:String(c.device||'').slice(0,40)})});
+        let j={};try{j=await r.json();}catch(_){}
+        if(r.status===401||r.status===429)throw new Error(j.error||'合言葉が違います（院内保管庫の設定を確かめてください）');
+        if(r.status===409&&j.wid&&(o.wids||[]).includes(j.wid)){o.base=j.ver;continue;}        // 返事が消えた自分の前の書き込みだった→その版の上に送り直す
+        if(r.status===409&&j.ver===0&&j.value==null&&o.base>0){o.base=0;continue;}            // Mac mini の置き場が作り直されていた→新しく送る
+        if(r.status===200||r.status===409){const same=r.status===200||(j.value==null?o.v==null:o.v!=null&&rsHash(j.value)===rsHash(o.v));const cur=RS.out[key];
+          if(same){RS.st.vers[key]=j.ver;RS.st.hs[key]=o.v==null?'':rsHash(o.v);if(cur===o)delete RS.out[key];else if(cur){cur.base=j.ver;cur.wids=(cur.wids||[]).concat(o.wid);}}
+          else{ // 別の iPad が先に直していた：Mac mini の方に合わせ、この iPad の入力は控える
+            const res=await rsApply(key,j.value);
+            if(res==='keep'){o.base=j.ver;continue;}                                            // 消された患者に検査がある＝患者を送り直して残す
+            rsKeepConflict(key,cur?cur.v:o.v,j.value);delete RS.out[key];if(res)changed=true;if(res!==null){RS.st.vers[key]=j.ver;RS.st.hs[key]=j.value==null?'':rsHash(j.value);}}
+          if(++nput%25===0)await rsSave();break;}
+        if(r.status===400||r.status===413){o.err=(j&&j.error)||('受け付けませんでした（'+r.status+'）');break;} // この1件だけ：残りは送る
+        throw new Error((j&&j.error)||('Mac mini が受け付けませんでした（'+r.status+'）'));}}
+    await rsSave();};
+    await pushAll();
+    // 2) ほかの iPad が直した分を受け取る（初めて・Mac mini が起動し直したときは全部）
+    const q=RS.st.epoch?('?since='+RS.st.seq+'&epoch='+encodeURIComponent(RS.st.epoch)):'';
+    const r=await rsFetch(base+q,{headers:H});let j={};try{j=await r.json();}catch(_){}
+    if(r.status===401||r.status===429)throw new Error(j.error||'合言葉が違います');if(r.status!==200||!j.ok)throw new Error((j&&j.error)||('Mac mini から読めませんでした（'+r.status+'）'));
+    const items=(j.full?j.docs:j.changes)||[];const seen=new Set();const local=j.full?rsLocalMap():null;
+    for(const it of items){if(!it||typeof it.key!=='string')continue;seen.add(it.key);if(RS.out[it.key])continue; // まだ送っていない入力がある記録は、送るときに版で確かめる
+      if(!j.full&&(RS.st.vers[it.key]||0)>=it.ver)continue; // 自分が送った分
+      const h=it.value==null?'':rsHash(it.value);const lv=local?(local.has(it.key)?local.get(it.key):null):rsLocalVal(it.key);
+      if(lv!=null&&it.value!=null&&lv===it.value){RS.st.vers[it.key]=it.ver;RS.st.hs[it.key]=h;continue;}
+      // この iPad で直したのに送っていない（共有をやめていた・合言葉が無かった・共有を始める前からあった）
+      if(lv!=null&&RS.st.hs[it.key]!==rsHash(lv)){
+        if(RS.st.vers[it.key]&&it.ver===RS.st.vers[it.key]){RS.out[it.key]={v:lv,base:it.ver,wid:rsWid(),wids:[]};continue;} // Mac mini は前のまま＝この iPad の入力を送る
+        rsKeepConflict(it.key,lv,it.value);} // 両方で変わっていた：Mac mini に合わせ、この iPad の分を控える
+      const res=await rsApply(it.key,it.value);
+      if(res==='keep'){RS.out[it.key]={v:lv,base:it.ver,wid:rsWid(),wids:[]};continue;}
+      if(res===null)continue; // 形が違う記録は入れず、版も覚えない
+      if(res)changed=true;RS.st.vers[it.key]=it.ver;RS.st.hs[it.key]=h;}
+    if(j.full){ // この iPad にあって Mac mini に無い記録（はじめての共有・置き場を作り直した）は送る
+      Object.keys(RS.st.vers).forEach(k=>{if(!seen.has(k)){delete RS.st.vers[k];delete RS.st.hs[k];}});
+      const now=rsLocalMap();now.forEach((v,k)=>{if(!seen.has(k)&&!RS.out[k])RS.out[k]={v,base:0,wid:rsWid(),wids:[]};});}
+    RS.st.epoch=j.epoch||'';RS.st.seq=j.seq||0;await rsSave();
+    if(Object.values(RS.out).some(o=>o&&!o.err))await pushAll(); // 受け取ったときに送る物ができた（患者を残す・この iPad の入力を送る）→続けて送る
+    RS.lastOk=Date.now();RS.err='';await rsSave();
+    if(Object.keys(RS.out).length)RS.again=true;
+  }catch(e){RS.err=e&&e.name==='AbortError'?'Mac mini から返事がありません':(e&&e.message&&!/fetch|network|Load failed/i.test(e.message)?e.message:'Mac mini に届きません（院内Wi-Fi・Mac mini の電源を確認）');}
+  finally{RS.busy=false;if(changed)rsAfterRemote();rsRefreshUI();if(RS.again){RS.again=false;if(!RS.err)rsSoon(300);}}}
+// ほかの iPad の変更が入ったら、入力中でない画面だけ描き直す（入力中の検査・文書・患者は描き直さない＝保存するときに版で確かめる）
+function rsAfterRemote(){try{const a=document.activeElement;if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))return;
+  if(route.name==='home'||route.name==='patientDetail'||route.name==='backup'||(route.name==='perio'&&pe&&pe.readOnly))render();}catch(_){}}
+function rsStatusText(){if(!rsWanted())return '';if(!rsCfg())return '院内保管庫の合言葉が未設定のため、共有していません';
+  const n=RS.out?Object.keys(RS.out).length:0;const bad=RS.out?Object.values(RS.out).filter(o=>o&&o.err):[];
+  if(bad.length&&!RS.err)return '⚠ Mac mini が受け付けない記録が '+bad.length+' 件あります（'+bad[0].err+'）。院長に連絡してください（ほかの記録は送っています）';
+  if(RS.err)return '⚠ '+RS.err+(n?'（送れていない記録 '+n+' 件はこの iPad に控えてあります）':'');
+  return RS.lastOk?('✓ Mac mini と共有中（'+new Date(RS.lastOk).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})+' に確認'+(n?'・送る記録 '+n+' 件':'')+'）'):'Mac mini とつないでいます…';}
+function rsRefreshUI(){const el=document.getElementById('rs-status');if(el)el.textContent=rsStatusText();try{renderTopBars();}catch(_){}}
+function rsStart(){if(RS.iv)return;rsSync();RS.iv=setInterval(()=>{if(typeof document==='undefined'||document.visibilityState!=='hidden')rsSync();},20000);
+  try{document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')rsSync();});}catch(_){}}
+function rsCardHTML(){const on=rsWanted();const cf=RS.conf||[];
+  return `<div class="card" style="padding:18px;margin-top:16px">
+    <h2 style="font-size:.9rem;font-weight:700;margin:0 0 8px">🔄 Mac mini で記録を共有（3台の iPad で同じ記録）</h2>
+    <p style="font-size:.8rem;margin:0 0 8px" id="rs-status">${on?esc(rsStatusText()):'この iPad は共有していません。'}</p>
+    <p style="font-size:.74rem;color:var(--soft);margin:0 0 10px">共有すると、この iPad で保存した記録が院内の Mac mini に届き、ほかの iPad でも同じ記録が出ます。Wi-Fi が切れている間も入力でき、つながったら送ります。同じ患者さんを2台で同時に直さないでください（食い違ったら Mac mini の方に合わせ、この iPad の入力は下に控えます）。見本の患者・下書き・患者名簿は送りません。</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">${on?`<button class="nb" style="font-weight:700" onclick="APP.rsNow()">今すぐ合わせる</button><button class="nb" onclick="APP.rsOff()">この iPad の共有をやめる</button>`
+      :`<button class="nb" style="font-weight:700" onclick="APP.rsOn()">この iPad で共有を始める</button>`}</div>
+    ${cf.length?`<div style="margin-top:12px;border-top:1px solid var(--line2);padding-top:10px"><div style="font-size:.82rem;font-weight:700;color:var(--bad)">食い違った入力（この iPad に控えたもの）${cf.length}件</div>
+      ${cf.map((x,i)=>`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:.78rem;padding:6px 0;border-bottom:1px solid var(--line2)"><span style="flex:1;min-width:200px">${esc(rsConfLabel(x))}（${esc(fmtWhen(x.at))}）</span>
+        ${x.mine!=null?`<button class="nb" onclick="APP.rsUseMine(${i})">この iPad の入力に戻す</button>`:''}<button class="nb" onclick="APP.rsDropConf(${i})">控えを消す</button></div>`).join('')}</div>`:''}
+  </div>`;}
+function rsConfLabel(x){const m=/^perio:([pedm]):(.+)$/.exec(x.key)||[];let o=null;try{o=JSON.parse(x.mine||x.theirs||'null');}catch(_){}
+  if(m[1]==='p')return '患者 '+(o&&o.name||'');if(m[1]==='e'){const p=o&&store.getPatient(o.patientId);return '検査 '+(o&&o.date||'')+' '+(p?p.name:'');}
+  if(m[1]==='d'){const p=o&&store.getPatient(o.patientId);return '文書 '+(o&&o.date||'')+' '+(p?p.name:'');}return m[2]==='staff'?'担当者の一覧':'医院情報';}
 // 重なって登録した患者をまとめる：from の検査・文書を to に移し、空いている項目（番号・フリガナ等）を写して from を消す。直前の状態は端末内に控える（取り消せる）
 async function mergePatients(fromId,toId){const a=store.getPatient(fromId),b=store.getPatient(toId);if(!a||!b||a===b)return false;if(!tabGuard())return false;
   await savePreRestore('merge');
@@ -3477,7 +4017,10 @@ window.APP={
   helpClose:()=>{const el=document.getElementById('overlay');if(el){el.innerHTML='';el.classList.remove('on');}},
   seenVersion:()=>{try{localStorage.setItem('perio_seen_ver',APP_VERSION);}catch(_){}render();},
   applyUpdate:()=>{if((pe&&pe.dirty&&route.name==='perio')||(dc&&dc.dirty&&route.name==='doc')){alert('保存していない入力があります。先に保存してから「更新する」を押してください。');return;}
-    flushDraftsNow();location.reload();},
+    flushDraftsNow();
+    // 手元の控え（sw.js が開くときに出す版）を新しい版に入れ替えてから開き直す。取れなければそのまま開き直す
+    const go=()=>location.reload();try{if(typeof caches==='undefined'){go();return;}const t=setTimeout(go,8000);
+      caches.open('perio-shell-v1').then(c=>c.add(new Request('./',{cache:'reload'}))).catch(()=>{}).then(()=>{clearTimeout(t);go();});}catch(_){go();}},
   tabTakeover:()=>{if(!confirm('この画面で続けます。もう一方の画面で入れた記録を読み込むため、この画面を開き直します（入力途中の内容は「続きから再開」で戻せます）。よろしいですか？'))return;
     tabBlocked=false;flushDraftsNow();try{tabCh&&tabCh.postMessage({t:'takeover',id:TAB_ID});}catch(_){}tabBlocked=true;location.reload();},
   // 見本（練習用）の患者・検査・文書と、見本の担当者（衛生士A/B）を消す
@@ -3491,9 +4034,9 @@ window.APP={
     if(!await persistAll()){Object.assign(store,prev);showErr('消せませんでした（端末に書き込めません）。データは元のままです。');return;}
     ['exam','doc'].forEach(k=>{if(drafts[k]&&ids.has(drafts[k].pid))clearDraft(k);});if(drafts.pf&&ids.has(drafts.pf.for))clearDraft('pf');
     toast('見本のデータを消しました');go({name:'home'});},
-  bkImportOpen:()=>{const el=document.getElementById('bkfile');el.value='';el.click();},
+  bkImportOpen:()=>{if(rsBlockBulk('バックアップから復元'))return;const el=document.getElementById('bkfile');el.value='';el.click();},
   // 直前の復元を取り消す（復元の直前に端末内へ控えたデータに戻す）
-  bkUndoRestore:async()=>{if(!tabGuard())return;const info=preRestoreInfo||await kvGet('pre_restore_info');const snap=await kvGet('pre_restore');
+  bkUndoRestore:async()=>{if(!tabGuard())return;if(rsBlockBulk('直前の状態に戻すことは'))return;const info=preRestoreInfo||await kvGet('pre_restore_info');const snap=await kvGet('pre_restore');
     if(!info||!snap){alert('戻せる控えがありません。');return;}
     const after=store.exams.filter(e=>(e.updatedAt||e.createdAt||'')>info.at).length;
     if(!confirm(`${info.kind==='merge'?'患者をまとめる前':'復元する前'}のデータに戻します。\n今　　：患者 ${store.patients.length}名・検査 ${store.exams.length}件\n戻した後：患者 ${info.patients}名・検査 ${info.exams}件（${fmtWhen(info.at)} の時点）${after?`\n\n⚠ 復元のあとに入れた・直した検査が ${after}件あります。戻すとそれらは消えます。`:''}\n\nよろしいですか？`))return;
@@ -3502,7 +4045,7 @@ window.APP={
     afterReplaceAll();await kvPut('pre_restore',null);await kvPut('pre_restore_info',null);preRestoreInfo=null;
     try{if(vault)vault.pushNow();}catch(_){}
     toast(`${info.kind==='merge'?'まとめる前':'復元する前'}のデータに戻しました：患者 ${store.patients.length}名・検査 ${store.exams.length}件`);go({name:'home'});},
-  bkWipe:async()=>{
+  bkWipe:async()=>{if(rsBlockBulk('全データ初期化'))return;
   if(!tabGuard())return false;
     const noExp=hasRealData()&&(!lastExport||fmtWhen(lastExport.at).slice(0,10)!==fmtWhen(new Date().toISOString()).slice(0,10));
     if(!confirm((noExp?'⚠ 今日はまだJSONを書き出していません（必要なら「キャンセル」で戻って先に書き出してください）。\n\n':'')+'全データ（患者・検査・文書・担当者）を削除して、まっさらな状態にします。よろしいですか？'))return;
@@ -3665,7 +4208,7 @@ window.APP={
     if(measuresPpd(pe.type)){const f=vFirstFrom(null);pe.sel=f;pe.site=f!=null?siteOrder(f)[0]:0;pe.done=false;if(hasVoice(pe.type))vc.cursor=f;}
     pe.padMode='ppd';refreshArch();renderEditor();refreshMissBar();
     if(how==='plaque'){APP.setView('plaque');return;}
-    if(how==='voice'&&hasVoice(pe.type)&&!vc.active&&!vc.dict){if(useKbdVoice())APP.dictOpen();else vStart();}},
+    if(how==='voice'&&hasVoice(pe.type)&&!vc.active&&!vc.dict){if(voiceEngine()==='kbd')APP.dictOpen();else vStart();}},
   mobPaintToggle:()=>{if(!pe||pe.readOnly||pe.type==='precision')return; /* 精密は歯式のタップで動揺度を入れない */pe.padMode='mob';APP.setTapMode('mob');},
   // 歯式・深さ ⇄ プラーク（精密・P混検）の切り替え
   setView:v=>{if(!pe)return;pe.view=v==='plaque'?'plaque':'chart';refreshPeMain();refreshPlaque();try{window.scrollTo(0,0);}catch(_){}},
@@ -3728,15 +4271,15 @@ window.APP={
   // 歯の移動は VORDER（巡回順：右上8→左上8→左下8→右下8）で統一。歯式の表示順ORDERとは別。
   advance:(dir,skip)=>{let idx=pe.sel==null?-1:VORDER.indexOf(pe.sel);
     if(skip&&dir>0){ // 自動送り：最後の歯の先は先頭に戻らず終了（続けて押した数字で先頭の歯を上書きしない）
-      for(let k=idx+1;k<VORDER.length;k++){const n=VORDER[k];if(!(pe.teeth[n].missing||pe.teeth[n].primary)){pe._auto=true;try{APP.selTooth(n);}finally{pe._auto=false;}const el=document.querySelectorAll('.tooth')[ORDER.indexOf(n)];if(el)el.scrollIntoView({inline:'center',block:'nearest',behavior:'smooth'});return;}}
+      for(let k=idx+1;k<VORDER.length;k++){const n=VORDER[k];if(!(pe.teeth[n].missing||pe.teeth[n].primary)){pe._auto=true;try{APP.selTooth(n);}finally{pe._auto=false;}tileIntoView(n);return;}}
       finishAll();return;}
-    for(let s=0;s<VORDER.length;s++){idx=(idx+dir+VORDER.length)%VORDER.length;const n=VORDER[idx];if(!skip||!(pe.teeth[n].missing||pe.teeth[n].primary)){APP.selTooth(n);const el=document.querySelectorAll('.tooth')[ORDER.indexOf(n)];if(el)el.scrollIntoView({inline:'center',block:'nearest',behavior:'smooth'});return;}}},
+    for(let s=0;s<VORDER.length;s++){idx=(idx+dir+VORDER.length)%VORDER.length;const n=VORDER[idx];if(!skip||!(pe.teeth[n].missing||pe.teeth[n].primary)){APP.selTooth(n);tileIntoView(n);return;}}},
   // 六点法：部位単位で前後移動（VORDER基準・歯の境界を越え、欠損歯はスキップ）
   advanceSite:(dir)=>{ // 部位単位で前後に移動（歯の中は siteOrder の順、歯は VORDER の順。欠損歯は飛ばす）
     let vi=pe.sel==null?(dir>0?0:VORDER.length-1):VORDER.indexOf(pe.sel);let p=pe.sel==null?(dir>0?-1:6):siteOrder(pe.sel).indexOf(pe.site);
     for(let g=0;g<VORDER.length*6+6;g++){p+=dir;if(p>5){p=0;vi++;}if(p<0){p=5;vi--;}if(vi<0){vi=0;p=0;break;}if(vi>=VORDER.length){vi=VORDER.length-1;p=5;break;}const xv=pe.teeth[VORDER[vi]];if(!xv.missing&&!xv.primary)break;}
     const n=VORDER[vi],old=pe.sel;pe.sel=n;pe.site=siteOrder(n)[p];if(old!=null&&old!==n)refreshTooth(old);refreshTooth(n);renderEditor();
-    const el=document.querySelectorAll('.tooth')[ORDER.indexOf(n)];if(el)el.scrollIntoView({inline:'center',block:'nearest',behavior:'smooth'});},
+    tileIntoView(n);},
   autoNextSite:()=>{const ord=siteOrder(pe.sel);const p=ord.indexOf(pe.site);if(p<5){pe.site=ord[p+1];renderEditor();return;}
     const idx=VORDER.indexOf(pe.sel);const rest=VORDER.slice(idx+1).some(n=>!pe.teeth[n].missing&&!pe.teeth[n].primary);
     if(!rest){finishAll();return;} pe.prevTooth=pe.sel;APP.advanceSite(1);},
@@ -3744,7 +4287,17 @@ window.APP={
   printExam:async()=>{const cur=pe;if(!gapConfirm())return;const r=await saveExamCore();if(!r||pe!==cur)return;if(r!=='unchanged')toast(r==='recreated'?'元の検査が見つからないため、新しい検査として保存しました':'保存しました');
     printExam(pe.patient,{teeth:pe.teeth,type:pe.type,date:pe.date,examiner:pe.examiner,carried:carriedList(),createdAt:pe.createdAt,updatedAt:pe.updatedAt,rev:pe.rev,findings:pe.findings});},
   // 音声入力
-  vToggle:()=>{if(vc.active){vStop();return;}if(vc.dict){APP.dictClose();return;}if(pe&&pe.intro){APP.introDone('voice');return;}if(useKbdVoice())APP.dictOpen();else vStart();},
+  vToggle:()=>{if(vc.active){vStop();return;}if(vc.dict){APP.dictClose();return;}if(pe&&pe.intro){APP.introDone('voice');return;}if(voiceEngine()==='kbd')APP.dictOpen();else vStart();},
+  rsOn:async()=>{if(!rsCfg()){alert('先に、この画面の下の「院内保管庫」で Mac mini の住所と合言葉を設定してください。');return;}
+    const n=k=>store[k].filter(o=>!rsIsSample(k,o)).length;
+    if(!confirm(`この iPad の記録（患者 ${n('patients')}人・検査 ${n('exams')}件・文書 ${n('docs')}件。見本は除く）を Mac mini の記録と合わせます。\n・Mac mini に無い記録は送ります\n・Mac mini にある記録はこの iPad に入ります（違っていた記録は、この iPad の分を控えに残します）\nよろしいですか？`))return;
+    try{localStorage.setItem('perio_share','1');}catch(_){}await rsLoad();RS.st.epoch='';RS.err='';await rsSave();rsStart();rsSync();render();},
+  rsOff:()=>{if(!confirm('この iPad の共有をやめます（この iPad の記録は残ります。Mac mini の記録も消しません）。よろしいですか？'))return;try{localStorage.setItem('perio_share','0');}catch(_){}render();},
+  rsNow:()=>{rsSync();},
+  rsUseMine:async i=>{const x=RS.conf[i];if(!x||x.mine==null)return;if(!confirm(rsConfLabel(x)+' を、この iPad で入れた内容に戻して Mac mini にも送ります。よろしいですか？'))return;
+    if(await rsApply(x.key,x.mine)){}RS.out[x.key]={v:x.mine,base:RS.st.vers[x.key]||0,wid:rsWid()};RS.conf.splice(i,1);await rsSave();rsSync();render();},
+  rsDropConf:async i=>{if(!RS.conf[i]||!confirm('この控えを消します（今の記録は変わりません）。よろしいですか？'))return;RS.conf.splice(i,1);await rsSave();render();},
+  vUseEngine:k=>{try{localStorage.setItem('perio_voice_engine',k);}catch(_){}if(k==='mini')vc.miniOk=null,sttProbe();vc.kbd=k==='kbd';if(vc.active)vStop();if(vc.dict)APP.dictClose();vRefreshPanel();},
   dictOpen:()=>{if(!pe||pe.readOnly||!hasVoice(pe.type))return;if(pe.intro)APP.introDone('');vc.dict=true;dictCommitted='';
     vSyncStart();
     try{vAudioCtx=vAudioCtx||new (window.AudioContext||window.webkitAudioContext)();if(vAudioCtx.resume)vAudioCtx.resume();}catch(_){}
@@ -3778,7 +4331,7 @@ window.APP={
     dc={pid,docId:null,kind,data:newDocData(kind,pid),copy:true,dirty:false}; // 自動入力しただけでは未保存の確認を出さない（保存ボタンは「● 保存」）
     go({name:'doc',patientId:pid});},
   openDoc:(pid,id)=>{const doc=store.docs.find(x=>x.id===id);if(!doc)return;if(!draftGuard('doc'))return;
-    dc={pid,docId:id,kind:doc.kind,data:clone(doc.data),copy:true,dirty:false};
+    dc={pid,docId:id,kind:doc.kind,data:clone(doc.data),copy:true,dirty:false};rsEditMark('docs',id);
     go({name:'doc',patientId:pid});},
   docSet:(f,v)=>{dc.data[f]=v;dc.dirty=true;refreshDocSave();},
   remarksCount:v=>{const el=document.getElementById('remarks-cnt');if(el)el.innerHTML=remarksCountHTML(v);},
@@ -3804,6 +4357,7 @@ window.APP={
   // 医院情報は1文字ごとに呼ばれるので、打ち終わりを待ってまとめて保存する
   clinicSet:(k,v)=>{store.clinic[k]=v;clearTimeout(clinicTimer);clinicTimer=setTimeout(async()=>{if(!await db.saveMeta())showErr(SAVE_FAIL_MSG);},700);},
 };
+Object.keys(APP).forEach(k=>{if(typeof APP[k]==='function')APP[k]=uiBatch(APP[k]);}); // 1回の操作で操作盤を何度も作り直さない
 // 保存を待つ操作は、処理中の2度押しを受け付けない（CSVの二重取り込み・患者の二重登録を防ぐ）
 let uiBusy=false;
 const onceAtATime=fn=>async(...a)=>{if(uiBusy)return;uiBusy=true;try{return await fn(...a);}finally{uiBusy=false;}};
@@ -4077,7 +4631,7 @@ window.addEventListener('pagehide',flushDraftsNow);
   try{preRestoreInfo=await kvGet('pre_restore_info');
     if(preRestoreInfo&&Date.now()-new Date(preRestoreInfo.at)>3*86400000){await kvPut('pre_restore',null);await kvPut('pre_restore_info',null);preRestoreInfo=null;} /* 復元の控えは3日で片づける（患者情報を端末に余分に残さない） */if(LOCAL.backend==='ls'&&!lastExport){const r=localStorage.getItem('perio_last_export');lastExport=r?JSON.parse(r):null;}}catch(_){}
   try{await refreshStorageInfo();}catch(_){}
-  initTabGuard();renderTopBars();checkUpdate(true);
+  initTabGuard();renderTopBars();checkUpdate(true);sttProbe();if(rsWanted())rsStart();
   // オフラインでも開けるように（https の公開URLのときだけ。ネット優先なので古い版に固定されない）
   try{if(location.protocol==='https:'&&'serviceWorker' in navigator)navigator.serviceWorker.register('sw.js',{scope:'./'}).catch(()=>{});}catch(_){}
   try{render();}catch(e){console.error(e);route={name:'home'};try{render();}catch(_){}showErr('画面を表示できませんでした（'+String(e&&e.message||e).slice(0,120)+'）。院長に連絡してください。');}
