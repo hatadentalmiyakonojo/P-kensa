@@ -259,6 +259,155 @@
   .dcand{display:block;width:100%;text-align:left;min-height:44px;padding:9px 12px;border:1px solid var(--line);border-radius:12px;background:#fff;font-size:.86rem;cursor:pointer;color:var(--ink);margin-bottom:6px;}
   .dcand:active{background:#f1f5f9;}
   .pbhint{font-size:.74rem;color:var(--soft);border:1px dashed var(--line);border-radius:12px;padding:10px 12px;}
+  /* ── v0.15：入力中はページをスクロールしない。歯式は上に全幅、その下の左に「今の歯」、右下に操作盤（モード＋テンキー） ── */
+  /* テンキーの高さ＝画面の高さから逆算（見出し・道具の列・歯式 約250px・操作盤の枠を引いた残りの1/4。56〜74px） */
+  .pe-main{--padw:372px;--tmin:60px;--archmax:300px;--key:clamp(56px,calc((100vh - var(--pe-top,60px) - 432px) / 4),74px);--key:clamp(56px,calc((100dvh - var(--pe-top,60px) - 432px) / 4),74px);
+    --plqh:clamp(44px,calc((100dvh - var(--pe-top,60px) - 180px) / 12),58px);}
+  @media (max-width:1100px){.pe-main{--padw:352px;}}
+  @media (max-width:900px){.pe-main{--padw:min(400px,48vw);--key:80px;--archmax:440px;--tmin:66px;}}
+  .pe-wrap{padding-bottom:28px!important;}
+  .pe-main{display:flex;flex-direction:column;gap:8px;padding:8px 0 8px;min-height:calc(100vh - var(--pe-top,68px));min-height:calc(100dvh - var(--pe-top,68px));}
+  .pe-main>*{flex:0 0 auto;}
+  .pe-tools{display:flex;align-items:center;gap:8px;min-height:46px;flex-wrap:nowrap;}
+  .pe-tools>button{flex:0 0 auto;min-height:46px;padding:8px 14px;border-radius:13px;font-weight:700;font-size:.86rem;cursor:pointer;}
+  .pe-tools .chip{border:1px solid var(--line);background:#fff;color:var(--ink);font-weight:600;font-size:.8rem;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .pe-tools .chip.warn{border-color:#f59e0b;color:#92400e;background:#fffbeb;}
+  .vtabs{display:inline-flex;border:1.5px solid var(--line);border-radius:13px;overflow:hidden;background:#fff;flex:0 0 auto;}
+  .vtabs button{min-height:44px;padding:6px 16px;border:0;background:#fff;font-weight:700;font-size:.88rem;color:#374151;cursor:pointer;}
+  .vtabs button+button{border-left:1.5px solid var(--line);}
+  .view-chart #tab-chart,.view-plaque #tab-plq{background:var(--ink);color:#fff;}
+  .plq-head{display:none;align-items:center;gap:10px;min-width:0;overflow:hidden;white-space:nowrap;}
+  .view-plaque .plq-head{display:flex;}
+  .view-plaque #arch-card,.view-plaque #dock,.view-chart #plq-card{display:none!important;}
+  .view-plaque .pe-tools .chip{display:none;}
+  .pe-main.dict-on .pe-tools,.pe-main.voice-on .pe-tools{display:none;}
+  .pe-main.voice-on,.pe-main.dict-on{--tmin:54px;--key:clamp(54px,calc((100dvh - var(--pe-top,60px) - 500px) / 4),74px);}
+  @media (max-width:900px){.pe-main.voice-on,.pe-main.dict-on{--key:80px;}}
+  .pe-main #dict-row,.pe-main #voice-bar{margin-top:0!important;}
+  .pe-ro{margin:0!important;padding:8px 14px!important;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+  /* 歯式：空いた高さに合わせてマスが伸びる（上限 --archmax） */
+  .pe-main #arch-card{margin:0!important;padding:6px 0!important;flex:1 1 auto;display:flex;flex-direction:column;max-height:var(--archmax);}
+  .pe-main #arch-card .arch{flex:1 1 0;display:flex;min-height:var(--tmin);}
+  .pe-main #arch-card .arch-inner{flex:1;padding:0 4px;}
+  .pe-main .tgroup{align-items:stretch;}
+  .pe-main .tooth{min-height:0!important;container-type:size;}
+  @media (min-width:1000px){.pe-main .tooth{padding-top:3px;}}
+  .pe-main .rlbar .rl,.pe-main .arch-label{font-size:.66rem;}
+  /* マスの中身はマスの高さ・幅に合わせて縮む（深さ／出血／動揺度の3段が必ず見える） */
+  .pe-main .tooth .tn{font-size:clamp(.6rem,13cqh,.82rem);}
+  .pe-main .tooth .pp{flex:1 1 0;min-height:0;padding:0;}
+  .pe-main .tooth .dnum{font-size:clamp(.95rem,min(26cqh,50cqw),1.9rem);height:1.4em;min-width:1.4em;}
+  .pe-main .tooth .trow{font-size:clamp(.56rem,11cqh,.8rem);line-height:1.3;flex:0 0 auto;}
+  .pe-main .tooth .dotb{width:clamp(6px,8cqh,9px);height:clamp(6px,8cqh,9px);}
+  /* プラーク：歯式・操作盤と切り替え（4段×8歯を1画面に） */
+  .pe-main #plq-card{margin:0!important;padding:6px 10px!important;flex:1 1 auto;}
+  .pe-main .plq-blk{display:grid;grid-template-columns:22px minmax(0,1fr);align-items:center;gap:4px;margin-bottom:5px;}
+  .pe-main .plq-blk:last-child{margin-bottom:0;}
+  .pe-main .plq-lab{writing-mode:vertical-rl;font-size:.7rem;color:var(--soft);letter-spacing:.1em;text-align:center;}
+  .pe-main .plq-row{grid-template-columns:repeat(8,minmax(0,1fr))!important;gap:5px;margin:0;}
+  .pe-main .plq-t{gap:3px;grid-template-rows:var(--plqh,44px) var(--plqh,44px) var(--plqh,44px);}
+  .pe-main .plq-t button{width:100%;}
+  .pe-main .plq-t{grid-template-columns:1fr .8fr 1fr;}
+  @media (max-width:1100px){.pe-main .plq-hint{display:none!important;}}
+  .view-plaque .pe-tools{flex-wrap:wrap;}
+  .view-plaque .plq-head{flex-wrap:wrap;row-gap:6px;}
+  /* 操作盤（dock）：歯式の下。左＝今の歯・前回値・前回値のまま・統計、右＝モード切替＋テンキー。高さが足りない端末でも下に貼り付く */
+  .dock{display:grid;gap:8px 10px;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr) var(--padw);grid-template-areas:"info ban pad" "info leg pad" "info stats pad";grid-template-rows:auto minmax(0,1fr) auto;margin-top:auto;position:sticky;bottom:0;z-index:6;background:var(--bg);padding-top:2px;}
+  .dock #editor{display:contents;}
+  .dock .ed-info{grid-area:info;padding:12px 14px;min-width:0;display:flex;flex-direction:column;gap:7px;}
+  .dock .ed-pb{grid-area:pb;min-width:0;}
+  .dock .ed-pad{grid-area:pad;padding:10px;display:flex;flex-direction:column;gap:8px;}
+  .dock #banner{grid-area:ban;margin:0!important;padding:9px 12px;font-size:.8rem;line-height:1.5;align-self:start;}
+  .dock .stats{grid-area:stats;margin:0!important;gap:6px;align-self:end;}
+  .dock .stat{padding:6px 4px;}
+  .dock .stat .v{font-size:1.15rem;}
+  .dock .stat .l{font-size:.64rem;margin-top:1px;}
+  .t-precision .dock{grid-template-columns:minmax(0,1fr) minmax(0,1fr) var(--padw);grid-template-areas:"info pb pad" "ban stats pad";grid-template-rows:auto auto;}
+  .t-precision .dock-leg{display:none;}
+  /* 基本・P混検：操作盤の高さ＝テンキーに必要な高さに固定（帯の注意書きが長いときは帯の中だけスクロール。歯式を押し出さない） */
+  .t-basic .dock,.t-mixed .dock{height:calc(4 * var(--key) + 108px);grid-template-rows:minmax(0,max-content) minmax(0,1fr) auto;}
+  .dock>*,.dock #editor>*{min-height:0;}
+  .t-basic .dock #banner,.t-mixed .dock #banner{overflow:auto;-webkit-overflow-scrolling:touch;align-self:stretch;}
+  @media (max-width:900px){.t-basic .dock #banner,.t-mixed .dock #banner{align-self:start;}}
+  .t-basic .dock .ed-info{overflow:hidden;}
+  .dock-leg{grid-area:leg;min-height:0;overflow:hidden;display:flex;flex-wrap:wrap;align-content:flex-start;gap:4px 12px;font-size:.7rem;color:var(--soft);padding:4px 6px;}
+  .dock-leg span{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;}
+  @media (max-width:900px){
+    .dock{grid-template-columns:minmax(0,1fr) var(--padw);grid-template-areas:"leg leg" "info pad" "ban pad" "stats pad";grid-template-rows:auto auto auto 1fr;}
+    .t-precision .dock{grid-template-columns:minmax(0,1fr) var(--padw);grid-template-areas:"leg leg" "info pad" "pb pad" "ban ban" "stats stats";grid-template-rows:auto auto 1fr auto auto;}
+    .t-precision .dock-leg{display:flex;}
+    .t-basic .dock,.t-mixed .dock{height:auto;grid-template-rows:auto auto auto 1fr;}
+    .dock .stats{align-self:start;}
+  }
+  /* モード切替（操作盤の上の段） */
+  .modebar{display:flex;gap:6px;}
+  .modebar button{flex:1 1 0;min-width:0;min-height:48px;padding:4px 2px;border-radius:12px;border:1.5px solid var(--mc,#374151);background:#fff;color:var(--mc,#374151);font-weight:800;font-size:.86rem;cursor:pointer;white-space:nowrap;}
+  .modebar button.on{background:var(--mc,#374151);color:#fff;}
+  .modebar button small{display:block;font-size:.58rem;font-weight:700;opacity:.85;line-height:1.1;}
+  /* テンキー（PCのテンキー型：7 8 9／4 5 6／1 2 3／0） */
+  .pad[data-pad]{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));grid-auto-rows:var(--key);gap:8px;flex:1 1 auto;align-content:end;}
+  .pad[data-pad] button{min-height:0;height:100%;padding:0;font-size:1.75rem;font-weight:700;border-radius:14px;border:1px solid #cbd5e1;background:#fff;color:var(--ink);box-shadow:0 2px 0 #d5dde6;cursor:pointer;}
+  .pad[data-pad] button:active{transform:translateY(1px);box-shadow:none;}
+  .pad[data-pad] button.on{background:var(--blue);border-color:var(--blue);color:#fff;}
+  .pad[data-pad] button:disabled{opacity:.25;box-shadow:none;}
+  .pad[data-pad] button.k-op{font-family:var(--sans);font-size:.95rem;font-weight:800;background:#f1f5f9;color:#334155;line-height:1.15;}
+  .pad[data-pad] button.k-op small{display:block;font-size:.62rem;font-weight:700;color:var(--soft);}
+  .pad[data-pad] button.k-undo{color:#0f766e;border-color:#99d5cc;background:#f0fdfa;}
+  .pad[data-pad] button.k-undo.none{color:#64748b;border-color:#cbd5e1;background:#fff;}
+  .pad[data-pad] button.k-miss.on{background:#64748b;border-color:#64748b;color:#fff;}
+  .pad[data-pad] button.k-10.on{background:var(--blue);border-color:var(--blue);color:#fff;}
+  .pad[data-pad] button.k-10.on small{color:#dbeafe;}
+  .pad[data-pad] .k-w2{grid-column:span 2;} .pad[data-pad] .k-w4{grid-column:span 4;}
+  .pad[data-pad] .k-h3{grid-row:span 3;}
+  .pad[data-mob] button.dg:not(:disabled){border-color:#374151;box-shadow:0 2px 0 #9ca3af;}
+  .pad[data-mob] button.dg.on{background:#374151;border-color:#374151;color:#fff;}
+  .pad[data-pad] .k-paint{font-family:var(--sans);font-size:1.05rem;font-weight:800;border-width:2px;}
+  .pad[data-pad] .k-hint{border:1.5px dashed var(--line);border-radius:14px;background:#fff;color:#334155;font-size:.86rem;line-height:1.6;padding:10px 12px;display:flex;flex-direction:column;justify-content:center;gap:4px;overflow:hidden;}
+  .pad[data-pad] .k-hint b{font-size:1rem;}
+  .pad[data-pad] .k-h2{grid-row:span 2;}
+  .pad[data-pad] button.k-go{background:var(--blue);border-color:var(--blue);color:#fff;font-size:1.05rem;}
+  .pad[data-pad] button.k-go small{color:#dbeafe;}
+  .pad[data-pad] button.k-voice{background:#15803d;border-color:#15803d;color:#fff;font-size:1.05rem;}
+  .pad[data-pad] button.k-voice small{color:#dcfce7;}
+  /* 新しい検査の最初＝欠損歯の登録の案内（吹き出し） */
+  .ei-pop{position:relative;background:#fffbeb;border:2px solid #f59e0b;border-radius:14px;padding:10px 14px;color:#78350f;font-size:.88rem;line-height:1.6;display:flex;flex-direction:column;gap:6px;animation:eipop .35s ease-out;}
+  .ei-pop::before{content:'';position:absolute;top:-11px;left:36px;border:10px solid transparent;border-top:0;border-bottom:11px solid #f59e0b;}
+  .ei-pop .ip-t{font-size:1.12rem;font-weight:800;color:#92400e;}
+  .ei-pop .ip-c{font-size:.95rem;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;} .ei-pop .ip-c b{font-size:1.3rem;} .ei-pop .ip-c span{font-size:.78rem;}
+  .ei-pop .ip-n{font-size:.8rem;color:#92400e;}
+  @keyframes eipop{from{transform:scale(.94);opacity:0;}to{transform:none;opacity:1;}}
+  .pe-main #arch-card{position:relative;}
+  .pe-main #arch-card.intro::after{content:'▼ 欠損している歯をタップ';position:absolute;top:-4px;left:50%;transform:translateX(-50%);background:#f59e0b;color:#fff;font-weight:800;font-size:.8rem;padding:3px 14px;border-radius:999px;pointer-events:none;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,.15);}
+  /* 今の歯 */
+  .ei-head{display:flex;align-items:center;gap:8px;min-width:0;}
+  .ei-no{font-size:1.6rem;font-weight:700;line-height:1;}
+  .ei-name{font-size:.9rem;color:#374151;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+  .ei-bdg{font-size:.62rem;font-weight:700;border-radius:5px;padding:1px 5px;flex:0 0 auto;}
+  .ei-vals{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;}
+  .ev{border:1.5px solid var(--line);border-radius:12px;padding:4px 8px 5px;background:#fff;min-width:0;}
+  .ev .evl{display:block;font-size:.66rem;color:var(--soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .ev .evv{display:block;font-family:var(--mono);font-size:1.9rem;font-weight:700;line-height:1.1;color:var(--ink);}
+  .ev.on{border-color:var(--blue);box-shadow:0 0 0 2px var(--blue-bg);}
+  .ev.on .evl{color:var(--blue-d);font-weight:700;}
+  .ev.mob.on{border-color:#374151;box-shadow:0 0 0 2px #e5e7eb;} .ev.mob.on .evl{color:#111827;}
+  .ev.bop.on{border-color:#dc2626;box-shadow:0 0 0 2px #fee2e2;} .ev.bop.on .evl{color:#991b1b;}
+  .ei-hint{font-size:.8rem;font-weight:700;color:var(--blue-d);}
+  .ei-prev{font-size:.78rem;color:var(--warn);display:flex;align-items:center;gap:8px;min-width:0;}
+  .ei-prev>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;}
+  .ei-prev .nb{flex:0 0 auto;font-size:.76rem;padding:5px 10px;font-family:var(--sans);}
+  .ei-le{font-size:.78rem;color:#166534;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:1.2em;}
+  .ei-foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:auto;}
+  .ei-foot .nb{font-size:.8rem;font-weight:700;}
+  .ei-big{font-size:.95rem;line-height:1.6;color:#334155;}
+  .ei-big b{font-size:1.05rem;}
+  .ei-sites .sr{display:flex;align-items:center;gap:6px;margin-bottom:5px;}
+  .ei-sites .sr:last-child{margin-bottom:0;}
+  .ei-sites .sl{font-size:.64rem;color:var(--soft);width:30px;flex:0 0 30px;}
+  .ei-sites button{flex:1;position:relative;min-height:48px;border-radius:10px;padding:3px 0;cursor:pointer;}
+  .dock .ed-pb .pbbox{height:100%;padding:10px 12px;border:1px dashed #fca5a5;border-radius:16px;background:#fff7f7;}
+  .dock .ed-pb .pbhint{height:100%;background:#fff;}
+  /* 検査画面のお知らせ（toast）は歯式の上に出す（下に出すとテンキーの最下段に重なって押せない） */
+  body:has(#pe-main) .toast{top:66px;bottom:auto;pointer-events:none;}
   @media print{
     #app,#toast,#errbar,#topbars,#overlay{display:none!important;}
     #print-area{display:block!important;}
@@ -1002,9 +1151,11 @@ const store={
 // ★PocketBase導入時：ミニPCでPBを起動し、下の url に院内サーバーのアドレスを入れるだけ。設定例：'http://192.168.1.50:8090'
 //   url='' のあいだは【端末内保存】。LOCAL.on=false でメモリのみに戻せる。
 const PB={url:''};
-const APP_VERSION='0.14.1';const DATA_SCHEMA=1;
+const APP_VERSION='0.15.0';const DATA_SCHEMA=1;
 // 更新内容（新しい順・アプリ内の「更新内容」とホームの「更新しました」に出す）
 const CHANGES=[
+  ['0.15.0','検査の画面を作り直し：テンキーは1つ（深さ／動揺度を上で切り替え、押すと次の歯へ）・出血は歯式のマスをタップ・ページをスクロールせずに入力できる。新しい検査は最初に欠損歯の登録（終わったら「🎤 声で入れる」か「テンキーで入れる」）。音声：「BOP」で出血の入力へ・「動揺」で動揺度の入力へ・「動揺は左上7と右下7が1で他はゼロ」「あとは全部0」'],
+  ['0.14.2','音声入力：「右下さん」「右下サン」「右下産」のように歯の番号がかな・同じ読みの字で返っても「右下3」として読む'],
   ['0.14.1','音声入力：iPadのホーム画面アイコンでは「🎤 音声入力」でキーボードのマイクの欄が上に開き、話し終えて約1秒で入る（「入力」を押さなくてよい）。キーボードの音声入力が「死」「後」「サンサンニ」のように返しても数字として読む'],
   ['0.14.0','製品としての総点検：一つ戻すで入力位置も戻る／音声が選んだ歯と別の歯に入る・モードが残る・取り消し後にずれる不具合を修正／「変」は出血を除いて判定／過去の日付の検査は日付より前の検査を前回値に／精密検査の後の基本検査は精密の最深部を初期値に／バックアップの復元を安全に（他のアプリのファイルを弾く・直前の状態に戻せる）／検索の表記ゆれ・CSVの二重登録防止・患者の削除（記録の無い人だけ）／使い方・新しい版のお知らせ・バックアップの促し・オフラインで開ける／患者名簿（レセコンCSV）でカルテ番号から氏名・生年月日を自動入力／重なった患者をまとめる／排膿の歯は出血ありとして数える／PCRが20%を超えたら文書の「磨き残し」を自動で'],
   ['0.13.2','患者登録・編集の入力途中を自動で控える'],
@@ -1334,7 +1485,7 @@ async function draftReadAll(){
   if(out.pf&&!(out.pf.pf&&out.pf.pf.bd&&(out.pf.for==='new'||store.getPatient(out.pf.for))))out.pf=null;
   return out;}
 function examDraftObj(){return (pe&&pe.dirty)?{v:1,pid:pe.pid,examId:pe.examId||null,type:pe.type,date:pe.date,examiner:pe.examiner,teeth:clone(pe.teeth),
-  touch:{ppd:[...touchSet('ppd')],mob:[...touchSet('mob')],bop:[...touchSet('bop')]},findings:pe.findings,at:new Date().toISOString()}:null;}
+  touch:{ppd:[...touchSet('ppd')],mob:[...touchSet('mob')],bop:[...touchSet('bop')],site:[...touchSet('site')]},findings:pe.findings,at:new Date().toISOString()}:null;}
 function docDraftObj(){return (dc&&dc.dirty)?{v:1,pid:dc.pid,docId:dc.docId||null,kind:dc.kind,data:clone(dc.data),copy:dc.copy,at:new Date().toISOString()}:null;}
 function pfDraftObj(){return (pf&&pf._dirty)?{v:1,for:pf._for,pf:clone(Object.assign({},pf,{errs:{}})),at:new Date().toISOString()}:null;}
 function flushDraft(kind,sync){clearTimeout(draftTimer[kind]);const o=kind==='exam'?examDraftObj():kind==='doc'?docDraftObj():pfDraftObj();if(!o)return;drafts[kind]=o;draftWrite(kind,o);
@@ -1389,10 +1540,10 @@ function mountVaultBadge(){try{vault.mountBadge(document.getElementById('vault-b
 const HELP=[
  ['flow','毎日の流れ',`<ol class="hl">
   <li>ホームで患者を探す（氏名・フリガナ・番号の一部でよい。空白や全角半角は気にしなくてよい）。いなければ「＋ 新規」。<b>「📖 患者名簿（レセコンCSV）」を読み込んでおくと</b>、まだ登録していない人も検索に出てタップで登録でき、新規登録でカルテ番号を入れるだけで氏名・生年月日が入ります（名簿は毎月など定期的に読み込み直す）。</li>
-  <li>患者ページで「＋ 基本検査」「＋ 精密検査」「＋ P混検」を押す。<b>前回の深さ・動揺度が最初から入っています。</b></li>
-  <li><b>変わった歯だけ</b>直す。変わらなかった歯は最後に「残りは前回と同じ（確認済み）」。</li>
-  <li>出血（BOP）・排膿は毎回<b>空から</b>。「🩸 出血(BOP)」を押して歯式のマスをタップ、または入力欄のボタン。</li>
-  <li>動揺度は入力欄で。最後に「動揺度：残りを全部0」でまとめて0にできます。</li>
+  <li>患者ページで「＋ 基本検査」「＋ 精密検査」「＋ P混検」を押す。<b>最初に欠損歯の登録</b>：ない歯（まだ生えていない歯も）を歯式でタップ。前回までの欠損は登録してあります。終わったら「🎤 声で入れる」か「テンキーで入れる」。</li>
+  <li><b>深さ</b>：テンキーの数字を押すと次の歯へ進みます。10mm以上は「10+」（押すたび+1）のあと「次 →」。<b>前回の深さ・動揺度が最初から入っている</b>ので、変わった歯だけ直し、変わらなかった歯は「残りは前回と同じ（確認済み）」。</li>
+  <li><b>動揺度</b>：テンキーの上の「動揺度」を押して 0〜3（押すと次の歯へ）。「動揺度：残りを全部0」でまとめて0にできます。</li>
+  <li><b>出血（BOP）・排膿</b>は毎回空から。「🩸 出血」を押して、出た歯のマスをタップ（排膿は「排膿（青）」を選んでから）。「✓ 終わる」で深さに戻ります。</li>
   <li>右上の「● 保存」で保存。紙が要るときは「🖨 保存して印刷・PDF出力」（必ず保存してから印刷します）。</li>
  </ol><p class="hp">押し間違えたら「↩ 一つ戻す」。入力位置も一緒に戻ります。途中で閉じても入力は控えてあり、ホームの「続きから再開」で戻れます。</p>`],
  ['marks','画面と紙の印',`<table class="ht"><tr><th>印</th><th>意味</th></tr>
@@ -1414,9 +1565,13 @@ const HELP=[
   <tr><td>4 出血</td><td>（深さを入れているとき）今の歯を深さ4・出血あり。出血モードのあとは「深さ」と言ってから</td></tr>
   <tr><td>出血すべてなし／排膿すべてなし</td><td>出血を全部消す／排膿だけ全部消す</td></tr>
   <tr><td>動揺度すべて0</td><td>動揺度を全部0</td></tr><tr><td>右下6欠損</td><td>右下6番を欠損（方角を必ず付ける）</td></tr>
+  <tr><td>BOP（ビーオーピー）</td><td>「出血」と同じ。深さを入れ終えた後に言えば出血の入力へ</td></tr>
+  <tr><td>動揺</td><td>動揺度の入力へ（深さを入れ終えた後なら右上8から）</td></tr>
+  <tr><td>動揺は左上7と右下7が1で他はゼロ</td><td>左上7・右下7を1、まだ入れていない歯を0</td></tr>
+  <tr><td>あとは全部0（動揺度のとき）</td><td>まだ入れていない歯を0</td></tr>
   <tr><td>取り消し</td><td>直前の発話を取り消し、同じ歯から言い直せる</td></tr></table>
   <p class="hp">聞き取りが不確かなとき（会話が混ざった・言い直し・「かな」「くらい」）は<b>入れずに</b>「入れていません」と出ます。もう一度言ってください。</p>
-  <p class="hp">iPadのホーム画面のアイコンから開いたときは、「🎤 音声入力」を押すと上に欄が開きます。キーボードの🎤を押して話すと、話し終えて約1秒で入ります（「入力」を押さなくてよい）。キーボードの音声入力が「死」「後」のように同じ読みの字で返しても、数字として読みます。</p>`],
+  <p class="hp">新しい検査は、欠損歯の登録のあと「🎤 声で入れる」を押すと、そのまま上の欄にキーボードが出ます。キーボードの🎤を押せば話せます。途中からは「🎤 音声入力」でも同じ欄が開きます。iPadのホーム画面のアイコンから開いたときは、「🎤 音声入力」を押すと上に欄が開きます。キーボードの🎤を押して話すと、話し終えて約1秒で入ります（「入力」を押さなくてよい）。キーボードの音声入力が「死」「後」のように同じ読みの字で返しても、数字として読みます。</p>`],
  ['save','保存・紙・文書',`<p class="hp">保存した検査は<b>見るだけ</b>で開きます（うっかり書き換えないため）。直すときは「✏️ 編集する」。直して保存すると紙に「第2版」と出ます。</p>
   <p class="hp">患者ページの「📄 治療のお知らせ」（様式1）・「🪥 口腔衛生管理」（様式3）は、直近の検査から自動で入ります。<b>空欄の項目</b>は検査で測っていないので、確かめて入れてください。印刷するとお渡し用＋控が出ます。</p>`],
  ['backup','バックアップ（大切）',`<p class="hp">記録はこのiPadの中だけにあります。<b>毎日（少なくとも週に1回）</b>「💾 バックアップ・データ管理」→「JSONで書き出す」をしてください。保存先は「<b>このiPad内</b>」を選び、院長のMacへは AirDrop で渡します（iCloud Drive は選ばない）。</p>
@@ -1448,7 +1603,7 @@ function topBarsHTML(){const out=[];const bar=(bg,bd,fg,html)=>`<div class="topb
   if(updateAvail)out.push(bar('#eff6ff','#93c5fd','#1e3a8a',`🔄 新しい版 v${esc(updateAvail)} があります（今は v${APP_VERSION}）。<button class="tbtn" onclick="APP.applyUpdate()">更新する</button>`));
   if(isIOSDevice()&&!isStandalone()&&location.protocol==='https:')out.push(bar('#fef3c7','#fcd34d','#92400e',`⚠ <b>Safariのタブ</b>で開いています。ここに入れた記録は、ホーム画面の「歯周検査」アイコンの記録とは<b>別の場所</b>に保存されます（この画面の記録：患者 ${store.patients.length}名・検査 ${store.exams.length}件）。ふだんはホーム画面のアイコンから開いてください。`));
   return out.join('');}
-function renderTopBars(){const el=document.getElementById('topbars');if(el)el.innerHTML=topBarsHTML();}
+function renderTopBars(){const el=document.getElementById('topbars');if(el)el.innerHTML=topBarsHTML();if(route&&route.name==='perio')fitPe();}
 // 新しい版が公開されたら知らせる（同じURLに上書き配信。ホーム画面のアイコンは開いたままだと古い版のままになるため）
 async function checkUpdate(force){if(location.protocol!=='https:')return;const now=Date.now();if(!force&&now-lastUpdCheck<30*60*1000)return;lastUpdCheck=now;
   try{const r=await fetch(location.pathname+'?v='+now,{cache:'no-store'});if(!r.ok)return;const t=await r.text();const m=t.match(/const APP_VERSION='([0-9.]+)'/);
@@ -2366,12 +2521,12 @@ const vToothName=n=>VQNAME[Math.floor(n/10)]+(n%10);
 const vc={active:false,engine:null,mode:'ppd',bopKind:'bop',bopQuad:null,cursor:null,lastTooth:null,sound:true,echo:false,log:[],
   heard:'',heardFinal:false,
   avail:!!(window.SpeechRecognition||window.webkitSpeechRecognition),homo:true,dict:false};
-const VMODE_LABEL={ppd:'深さ入力',bop:'BOP・排膿入力',mob:'動揺度入力'};
-const VMODE_HINT={ppd:'数字を連続で／「右上1から」「右上4は5」「ポケットすべて3」',bop:'「右上4」で出血＋／「右上4なし」で解除／「すべてなし」',mob:'数字0-3を連続で／「右上3は2」「動揺度右上が1でその他すべて0」'};
+const VMODE_LABEL={ppd:'深さ入力',bop:'出血（BOP）入力',mob:'動揺度入力'};
+const VMODE_HINT={ppd:'数字を連続で／「右上1から」「右上4は5」「ポケットすべて3」',bop:'歯の名前を言うと赤丸（「右上6」「右下76」）／「右上4なし」で外す／「すべてなし」',mob:'数字0-3を連続で／「右上3は2」「動揺度右上が1でその他すべて0」'};
 // 音声認識テキストの正規化（全角/漢数字→算用数字、かな方角、フィラー除去）
 function vNorm(s){
   s=(s||'').replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0));
-  s=s.replace(/[BbＢｂ][OoＯｏ][PpＰｐ]/g,'出血').replace(/ビーオーピー?/g,'出血'); // BOP＝出血の別名
+  s=s.replace(/[BbＢｂ][\s.．・]*[OoＯｏ0０][\s.．・]*[PpＰｐ]/g,'出血').replace(/ビー?オー?ピー?|びー?おー?ぴー?/g,'出血'); // BOP＝出血の別名（「B OP」「びーおーぴー」も）
   s=s.replace(/出血プラス|出血ぷらす|出血陽性|出血あり/g,'出血').replace(/出血マイナス|出血まいなす|出血陰性/g,'出血なし'); // 「BOPプラス」→出血
   // 別名の統一
   s=s.replace(/ブリーディング|しゅっけつ|出欠|しゅけつ/g,'出血');
@@ -2387,6 +2542,7 @@ function vNorm(s){
   s=s.replace(/ミリメートル|ミリ|みり|㎜|ｍｍ|mm/gi,'');
   s=s.replace(/番目|ばんめ|番|ばん/g,'');
   s=s.replace(/えーと|ええと|えっと|あのー|あの|そのー|えー|あー|んー|うーん|まあ/g,'');
+  s=s.replace(/あとは/g,'残りは'); // 「あとは全部0」（次の「と」の除去で「あは」にならないように）
   s=s.replace(/と|、|および|ならびに/g,''); // 連続列挙の接続「と」等を除去（左上7と6と5→左上765）
   s=s.replace(/十五/g,'15').replace(/十四/g,'14').replace(/十三/g,'13').replace(/十二/g,'12').replace(/十一/g,'11').replace(/十/g,'10');
   const KJ={'〇':'0','零':'0','一':'1','二':'2','三':'3','四':'4','五':'5','六':'6','七':'7','八':'8','九':'9'};
@@ -2410,9 +2566,13 @@ function vParse(s,mode){
     [/^(右上|左上|右下|左下)([1-8])から/,m=>({t:'cursor',tooth:VQUAD[m[1]]*10+ +m[2]})],
     // 複数歯に一括代入「右上12が1」（方角＋複数桁＋が＋値）。動揺度接頭辞つきはmob固定
     [/^動揺度(右上|左上|右下|左下)([1-8]+)が(1[0-5]|[0-9])/,m=>({t:'teethSet',target:'mob',q:VQUAD[m[1]],digs:m[2],v:+m[3]})],
+    [/^動揺度?((?:(?:右上|左上|右下|左下)[1-8]+){2,})(?:が|は)([0-3])/,m=>({t:'teethMulti',target:'mob',list:vToothList(m[1]),v:+m[2]})], // 「動揺 左上7右下7が1」
+    [/^((?:(?:右上|左上|右下|左下)[1-8]+){2,})(?:が|は)(1[0-5]|[0-9])/,m=>({t:'teethMulti',target:null,list:vToothList(m[1]),v:+m[2]})], // 「左上7と右下7が1」
     [/^動揺度?(右上|左上|右下|左下)([1-8])は([0-3])/,m=>({t:'teethSet',target:'mob',q:VQUAD[m[1]],digs:m[2],v:+m[3]})], // 「動揺度 右上6は1」
+    [/^(右上|左上|右下|左下)([1-8]{2,})は(1[0-5]|[0-9])/,m=>({t:'teethSet',target:null,q:VQUAD[m[1]],digs:m[2],v:+m[3]})], // 「右上67は1」
     [/^(右上|左上|右下|左下)([1-8]+)が(1[0-5]|[0-9])/,m=>({t:'teethSet',target:null,q:VQUAD[m[1]],digs:m[2],v:+m[3]})],
-    [/^その他は?(?:すべて|全て|全部)?は?(1[0-5]|[0-9])/,m=>({t:'others',v:+m[1]})],
+    [/^(?:その他|他|ほか)は?(?:すべて|全て|全部|みんな)?は?(1[0-5]|[0-9])/,m=>({t:'others',v:+m[1]})],
+    [/^(?:残り|あと)(?:は|すべて|全て|全部|みんな)+(1[0-5]|[0-9])/,m=>({t:'others',v:+m[1]})], // 「あとは全部0」（「あと 3 3 2」は数字のまま）
     [/^(?:ポケット|深さ)は?(?:すべて|全て|全部)(1[0-5]|[0-9])/,m=>({t:'bulk',target:'ppd',v:+m[1]})],
     [/^動揺度?は?(?:すべて|全て|全部)([0-9])/,m=>({t:'bulk',target:'mob',v:+m[1]})],
     [/^(?:すべて|全て|全部)は?なし/,()=>({t:'bulkBopOff'})],
@@ -2480,11 +2640,17 @@ function vApply(res,rawText){
   const prefix=cmds[0]&&cmds[0].t==='bopEnter';let justList=[];
   for(let ci=0;ci<cmds.length;ci++){const c=cmds[ci];
     const pf=pendFrom;pendFrom=null;
-    if(c.t==='mode'){vc.mode=c.m;vc.bopQuad=null;keepMode=c.m;notes.push(VMODE_LABEL[c.m]);ok++;continue;}
+    if(c.t==='mode'){vc.mode=c.m;vc.bopQuad=null;keepMode=c.m;
+      if(c.m==='mob'&&(vc.cursor==null||pe.done)){vc.cursor=vFirstFrom(null);pe.done=false;notes.push(VMODE_LABEL[c.m]+'（'+(vc.cursor?vToothName(vc.cursor):'')+'から）');ok++;continue;} // 動揺度の回りを最初の歯から
+      notes.push(VMODE_LABEL[c.m]);ok++;continue;}
     if(c.t==='bopEnter'){vc.bopKind=c.kind;
       if(just!=null&&!prefix){const list=justList.length?justList:[just];let cnt=0;list.forEach(n=>{if(applyBK(n,c.kind)){cnt++;notes.push(vToothName(n)+BKN[c.kind]);}});justList=[];just=null;
         if(cnt){vc.lastTooth=list[list.length-1];oneShot=true;ok++;}else rej++;continue;} // 言った歯にだけ付ける（モードも入力位置も変えない）
       vc.mode='bop';vc.bopQuad=null;keepMode='bop';notes.push(BKN[c.kind]+'モード');ok++;continue;}
+    if(c.t==='teethMulti'){const tg=c.target||vc.mode;if(tg==='bop'){rej++;notes.push('いまは出血モードです（深さ・動揺度は「深さ」「動揺」と言ってから）');continue;}
+      if(c.target){vc.mode=c.target;oneShot=true;}let cnt=0;const nm=[];
+      for(const tn of c.list){if(setVal(tn,tg,c.v)){cnt++;nm.push(vToothName(tn));}}
+      if(cnt){vc.lastTooth=c.list[c.list.length-1];notes.push(nm.join('・')+'が'+c.v+(tg==='mob'?'（動揺度）':''));ok++;}else rej++;continue;}
     if(c.t==='teethSet'){const tg=c.target||vc.mode;if(c.target){vc.mode=c.target;oneShot=true;}let cnt=0,ns='';
       for(const d of c.digs){const tn=c.q*10+ +d;if(setVal(tn,tg,c.v)){cnt++;ns+=d;}}
       if(cnt){vc.lastTooth=c.q*10+ +c.digs[c.digs.length-1];notes.push(VQNAME[c.q]+ns+'が'+c.v);ok++;}else rej++;continue;}
@@ -2537,7 +2703,7 @@ function vApply(res,rawText){
       if(vc.mode==='bop'){for(let k=si;k<=ei;k++)if(applyBK(VORDER[k],vc.bopKind))cnt++;}
       else for(let k=si;k<=ei;k++){if(setVal(VORDER[k],vc.mode,c.v))cnt++;}
       if(cnt){vc.lastTooth=VORDER[ei];if(vc.mode!=='bop')vc.cursor=vNextAfter(VORDER[ei]);
-        notes.push(vToothName(c.from)+'から'+vToothName(VORDER[ei])+'まで'+(vc.mode==='bop'?BKN[vc.bopKind]:c.v));ok++;}else rej++;continue;}
+        notes.push(vToothName(VORDER[si])+'から'+vToothName(VORDER[ei])+'まで'+(vc.mode==='bop'?BKN[vc.bopKind]:c.v));ok++;}else rej++;continue;}
     if(c.t==='bulk'){const tg=target(c.target);
       if(!c.target&&tg==='ppd'&&c.v===0){rej++;notes.push('深さを全部0にはできません（動揺度なら「動揺度すべて0」）');continue;}
       if(c.target){vc.mode=c.target;oneShot=true;}let cnt=0;
@@ -2561,6 +2727,7 @@ function vApply(res,rawText){
       if(n){vc.cursor=n;notes.push(vToothName(n)+'へ');ok++;}else rej++;continue;}
   }
   if(oneShot&&!keepMode){vc.mode=mode0;if(mode0!=='bop')vc.bopQuad=null;} // 一回だけの指定は元のモードへ
+  if(keepMode)voiceToPad(vc.mode); // 声で「深さ」「動揺」「出血」と言ったら、テンキーの上の切替も同じにする
   if(willEdit)pe.dirty=true;
   refreshSaveBtn();refreshMissBar();
   // 画面反映（カーソル位置をpe.selに反映してから歯式を再描画＝ハイライト追従）
@@ -2602,6 +2769,19 @@ function vPre(s){
 const V_KANA=[['きゅう',9],['きゅー',9],['しち',7],['なな',7],['はち',8],['ろく',6],['よーん',4],['よん',4],['さーん',3],['さん',3],['いち',1],['にー',2],['にい',2],['ごー',5],['しー',4],['ぜろ',0],['まる',0],['れい',0],['に',2],['ご',5],['し',4],['く',9]];
 // 数字と同じ読みの字（キーボードの音声入力は「4」を「死」、「5」を「後」のように返すことがある）。発話の全部が数字として読めるときだけ使う
 const V_HOMO=[['位置',1],['市',1],['壱',1],['弐',2],['荷',2],['似',2],['煮',2],['児',2],['参',3],['産',3],['酸',3],['惨',3],['死',4],['氏',4],['詩',4],['誌',4],['師',4],['後',5],['語',5],['碁',5],['呉',5],['午',5],['御',5],['録',6],['禄',6],['質',7],['菜々',7],['蜂',8],['鉢',8],['急',9],['球',9],['求',9],['旧',9],['級',9],['給',9],['宮',9],['苦',9],['句',9],['区',9],['丸',0]];
+// 方角のすぐ後ろの歯の番号が、かな・カタカナ・同じ読みの字で返ってきたら数字にする（「右下さん」「右下サン」「右下産」→右下3。院長の実機 2026-10-27）
+const V_TOOTH_KANA=[['いち',1],['にー',2],['にい',2],['さん',3],['よん',4],['ごー',5],['ろく',6],['なな',7],['しち',7],['はち',8],['に',2],['し',4],['ご',5]];
+// 「左上7右下76」→ [27,47,46]
+function vToothList(str){const out=[];str.replace(/(右上|左上|右下|左下)([1-8]+)/g,(m,q,d)=>{for(const x of d)out.push(VQUAD[q]*10+ +x);return m;});return out;}
+function vQuadKana(s){let out='',i=0,m;const re=/(右上|左上|右下|左下)/g;
+  while((m=re.exec(s))){const st=m.index+m[1].length;out+=s.slice(i,st);i=st;
+    const rest=s.slice(st),h=rest.replace(/[ァ-ヶ]/g,c=>String.fromCharCode(c.charCodeAt(0)-0x60));let j=0,num='';
+    while(j<h.length){const k=V_TOOTH_KANA.find(([w])=>h.startsWith(w,j));if(k){num+=k[1];j+=k[0].length;continue;}
+      const hm=V_HOMO.find(([w,d])=>d>=1&&d<=8&&h.startsWith(w,j));if(hm){num+=hm[1];j+=hm[0].length;continue;}break;}
+    // 番号の後ろが「は・が・から・まで・欠損・出血…」など続きの言葉か、何もないときだけ（「右下しか」のような言葉は変えない）
+    const tail=rest.slice(j);
+    if(num&&(!tail||/^(?:は|が|から|迄|欠損|出血|排膿|なし|へ|[0-9]|右上|左上|右下|左下|と|、)/.test(tail))){out+=num;i=st+j;re.lastIndex=i;}}
+  return out+s.slice(i);}
 function vKanaRun(s){ // 全部が数字（かな含む）なら算用数字の並びを返す。そうでなければ null
   const J={'じゅう':'10','じゅういち':'11','じゅうに':'12','じゅうさん':'13','じゅうよん':'14','じゅうご':'15'};if(J[s])return J[s];
   let out='',i=0,conv=false,homoN=0;
@@ -2622,9 +2802,10 @@ function vInterpret(raw,mode){
   if(new RegExp('(?:は|が)\\s*\\d\\s*[、,。]?\\s*'+FL+'\\s*[、,。]?\\s*\\d').test(pre)||/\d\s*[、,。]?\s*(?:あー*|おっと)\s*[、,。]?\s*\d/.test(pre))
     return{s:pre,res:null,bad:'（言い直しのように聞こえたため入力しませんでした。もう一度どうぞ）'};
   const sep=/\d[\s、,，。.・]+\d/.test(pre); // 「1 2」「1、2」＝区切りのある数字（12mm にまとめない）
-  let s=vNorm(pre);
+  let s=vQuadKana(vNorm(pre));
   s=s.replace(/(右上|左上|右下|左下)([1-8])へ/g,'$1$2').replace(/(出血|排膿|深さ|ポケット|動揺度?)モード/g,'$1'); // 「右上5へ」「出血モード」は正式な言い方
   s=s.replace(/(右上|左上|右下|左下)([1-8])(?:は|が)欠損/g,'$1$2欠損'); // 「右下6は欠損」
+  s=s.replace(/^(動揺度?|深さ|ポケット)は(?=右上|左上|右下|左下|すべて|全て|全部|その他|他|ほか|残り|あと)/,'$1'); // 「動揺は左上7…」
   // 方角のない「6番欠損」：今の歯に6が入り次の歯が欠損になってしまうので入れない
   if(/(?:^|[^上下0-9])[1-8]欠損/.test(s))return{s,res:null,bad:'（どの歯か分からないため入力しませんでした。「右下6欠損」のように方角を付けて言ってください）'};
   if(/^1[0-5]$/.test(s)&&(sep||mode==='mob'))return{s,res:{cmds:s.split('').map(d=>({t:'digit',v:+d})),noise:''},bad:null};
@@ -2645,6 +2826,8 @@ function vInterpret(raw,mode){
   if(res.cmds.some(c=>c.t==='step')&&res.noise.replace(/[\s、。]/g,''))return{s,res,bad:'（会話の「次」かもしれないため進めませんでした。進めるときは「次」だけを言ってください）'};
   // 「出血ありますね」など丁寧な言い方で終わるモード切替だけの発話＝患者さんとの会話。モードを変えない
   if(res.cmds.every(c=>c.t==='mode'||c.t==='bopEnter')&&/(?:ます|ました|です|でした)(?:ね|よ|よね)?[。！!？?]*$/.test(String(raw||'').trim()))return{s,res,bad:'（会話かもしれないためモードを変えませんでした。切り替えるときは「出血」のように短く言ってください）'};
+  if(mode!=='mob'&&!res.cmds.some(c=>(c.t==='mode'&&c.m==='mob')||c.target==='mob')&&res.cmds.some(c=>['others','bulk','quad'].includes(c.t)&&!c.target&&c.v===0))
+    return{s,res:null,bad:'（深さを0にはできないため入力しませんでした。動揺度なら「動揺は 左上7と右下7が1で他はゼロ」のように「動揺」を付けて言ってください）'};
   if(vNoiseBad(res.noise))return{s,res,bad:/[上下左右]/.test(res.noise)?'（位置の聞き取りが不確かなため入力しませんでした。もう一度どうぞ）':'（会話が混ざったため入力しませんでした：「'+res.noise.replace(/★/g,'きれい')+'」）'};
   return{s,res,bad:null};}
 function vHandle(raw){
@@ -2693,7 +2876,14 @@ function vDiag(){const ua=navigator.userAgent||'';
 // ホーム画面のアイコンから開いているか（Safari のタブとは保存場所が別）
 function isStandalone(){try{return navigator.standalone===true||(window.matchMedia&&matchMedia('(display-mode: standalone)').matches);}catch(_){return false;}}
 function isIOSDevice(){const ua=navigator.userAgent||'';return /iP(hone|ad|od)/.test(ua)||(/Macintosh/.test(ua)&&typeof document!=='undefined'&&'ontouchend' in document);}
-function vStart(){
+// 話し始めるとき：声の項目をテンキー側に合わせ、入力先＝いま選んでいる歯（出血のタップ中は抜ける前の歯）。欠損・乳歯・動揺度の塗りの途中なら抜けてから
+function vSyncStart(){if(pe.tapMode&&pe.tapMode!=='bop')APP.setTapMode(pe.tapMode);
+  const base=pe.tapMode?(pe.tapReturn&&pe.tapReturn.sel):pe.sel;
+  vc.cursor=(base!=null&&!vSkip(base))?base:(vc.cursor&&!vSkip(vc.cursor))?vc.cursor:(pe.done?null:vFirstFrom(null));
+  const m=pe.tapMode==='bop'?'bop':(pe.padMode||'ppd');if(vc.mode!==m){vc.mode=m;vc.bopQuad=null;if(m==='bop')vc.bopKind=['bop','pus','none'].includes(pe.bopPaint)?pe.bopPaint:'bop';}
+  if(pe.tapMode==='bop'){if(pe.tapReturn)pe.tapReturn.sel=vc.cursor;}
+  else if(vc.cursor!=null&&pe.sel!==vc.cursor){pe.sel=vc.cursor;refreshArch();renderEditor();}}
+function vStart(){if(pe&&pe.intro)APP.introDone(''); /* 欠損の登録の案内中に話し始めたら案内を終える（歯のタップが欠損の切り替えのままにならないように） */
   if(!pe||pe.readOnly||!hasVoice(pe.type))return;
   vc.err='';const d=vDiag();
   if(!vc.avail){
@@ -2704,7 +2894,7 @@ function vStart(){
     vRefreshPanel();return;
   }
   // 声の入力先＝いま選んでいる歯（無ければ前回の位置、最後の歯まで入力済みなら入力しない）
-  vc.cursor=(pe.sel!=null&&!vSkip(pe.sel))?pe.sel:(vc.cursor&&!vSkip(vc.cursor))?vc.cursor:(pe.done?null:vFirstFrom(null));
+  vSyncStart();
   vc.heard='';vc.heardFinal=false;
   // iPad はタップの中で音を鳴らす準備をしないと「ピッ」が鳴らない
   try{vAudioCtx=vAudioCtx||new (window.AudioContext||window.webkitAudioContext)();if(vAudioCtx.resume)vAudioCtx.resume();}catch(_){}
@@ -2736,21 +2926,19 @@ function vStop(){if(vc.engine)vc.engine.stop();vc.active=false;const p=document.
 function vBarHTML(){
   if(!pe||!hasVoice(pe.type))return '';
   if(!vc.active&&!vc.err)return ''; // 止まっているときは道具の列の「🎤 音声入力」だけ
+  // v0.15：1段にまとめる（停止・入力先・聞き取り）。結果は下に1行。歯式とテンキーを押し出さないため
+  const l=vc.log[0];
   return `
-    <div style="display:flex;align-items:center;gap:12px">
+    <div style="display:flex;align-items:center;gap:10px;min-width:0">
       ${vc.active?`<button class="vbtn on" style="flex:0 0 auto;min-height:46px;padding:9px 16px;border-radius:13px;font-weight:700;font-size:.9rem;cursor:pointer" onclick="APP.vToggle()">● 停止</button>`:''}
-      <div style="flex:1;min-width:0">
-        ${vc.active
-          ?`<div style="font-weight:700;color:var(--blue-d);font-size:.95rem">${VMODE_LABEL[vc.mode]}　<span class="mono">${vc.cursor?'▶ '+vToothName(vc.cursor):'（最後の歯まで入力済み）'}</span></div><div style="font-size:.72rem;color:var(--soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${VMODE_HINT[vc.mode]}</div>`
-          :`<div style="font-size:.8rem;color:var(--soft)">音声入力は止まっています。</div>`}
-      </div>
+      ${vc.active?`<div style="flex:0 0 auto;font-weight:700;color:var(--blue-d);font-size:.92rem;white-space:nowrap" title="${esc(VMODE_HINT[vc.mode])}">${VMODE_LABEL[vc.mode]}　<span class="mono">${vc.cursor?'▶ '+vToothName(vc.cursor):'（最後まで入力済み）'}</span></div>
+        <div style="flex:1;min-width:0;padding:7px 12px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;display:flex;align-items:center;gap:8px;overflow:hidden">
+          <span style="font-size:.62rem;color:#4f46e5;flex:0 0 auto;font-weight:600">🔊 聞き取り</span>
+          <span id="v-heard" style="font-size:1rem;min-width:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${vHeardHTML()}</span></div>`
+        :`<div style="flex:1;font-size:.8rem;color:var(--soft)">音声入力は止まっています。</div>`}
     </div>
-    ${vc.active?`<div style="margin-top:10px;padding:9px 12px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;display:flex;align-items:center;gap:8px">
-      <span style="font-size:.62rem;color:#4f46e5;flex:0 0 auto;font-weight:600">🔊 聞き取り</span>
-      <span id="v-heard" style="font-size:1rem;min-width:0;flex:1;overflow-wrap:anywhere">${vHeardHTML()}</span>
-    </div>`:''}
-    ${vc.active&&vc.log.length?`<div style="margin-top:6px;font-size:.84rem;font-weight:700;color:${vc.log[0].rej?'#9a3412':'#166534'}">${vc.log[0].rej?'✗ 入れていません：':'✓ '}${esc(vc.log[0].note)}</div>`:''}
-    ${vc.err?`<div style="margin-top:8px;font-size:.84rem;color:var(--bad);font-weight:600">${esc(vc.err)}</div>`:''}`;
+    ${vc.active&&l?`<div style="margin-top:4px;font-size:.84rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:${l.rej?'#9a3412':'#166534'}">${l.rej?'✗ 入れていません：':'✓ '}${esc(l.note)}</div>`:''}
+    ${vc.err?`<div style="margin-top:6px;font-size:.84rem;color:var(--bad);font-weight:600">${esc(vc.err)}</div>`:''}`;
 }
 // 下部の詳細パネル（モード切替・テキスト確認・ログ・診断）
 function vPanelHTML(){
@@ -2773,7 +2961,7 @@ function vPanelHTML(){
       ${vc.log.map(l=>`<div style="display:flex;gap:8px;padding:2px 0"><span style="color:var(--faint);flex:0 0 45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">「${esc(l.raw)}」</span><span style="${l.rej?'color:var(--warn)':''}">→ ${esc(l.note)}</span></div>`).join('')}
     </div>`:''}`;
 }
-function vRefreshPanel(){const b=document.getElementById('voice-bar');if(b)b.innerHTML=vBarHTML();const p=document.getElementById('voice-panel');if(p)p.innerHTML=vPanelHTML();const vb=document.getElementById('vbtn');if(vb){const on=vc.active||vc.dict;vb.className='vbtn'+(on?' on':'');vb.textContent=on?'● 音声 停止':'🎤 音声入力';}dictStatus();}
+function vRefreshPanel(){if(pe&&route&&route.name==='perio')refreshPeMain();const b=document.getElementById('voice-bar');if(b)b.innerHTML=vBarHTML();const p=document.getElementById('voice-panel');if(p)p.innerHTML=vPanelHTML();const vb=document.getElementById('vbtn');if(vb){const on=vc.active||vc.dict;vb.className='vbtn'+(on?' on':'');vb.textContent=on?'● 音声 停止':'🎤 音声入力';}dictStatus();}
 
 // ───────── 歯周検査 本体（前回値の引き継ぎ＋変更ハイライト） ─────────
 let pe=null;
@@ -2812,45 +3000,60 @@ function renderPerio(pid,examId,newType){
   pe.orig={date:pe.date,examiner:pe.examiner}; // 一つ戻すで元の状態に戻ったかの判定用
   // 下書きから再開（前回値・変更マークの基準は通常どおり。値だけ下書きに置き換え、未保存として扱う）
   if(dr){pe.teeth=normalizeTeeth(dr.teeth);if(dr.date)pe.date=dr.date;pe.examiner=dr.examiner||'';pe.dirty=true;drafts.exam=dr;if(dr.findings)pe.findings=Object.assign(freshFindings(),dr.findings);
-    if(dr.touch)['ppd','mob','bop'].forEach(k=>{pe.touch[k]=new Set((dr.touch[k]||[]).map(Number));});}
+    if(dr.touch)TOUCH_KEYS.forEach(k=>{pe.touch[k]=new Set((dr.touch[k]||[]).map(Number));});
+    if(dr.touch&&!dr.touch.site&&type==='precision')(dr.touch.ppd||[]).forEach(n=>touchAllSites(Number(n)));} // 部位の記録が無い古い下書きは、触った歯を全部位確かめた扱い（従来どおり）
   if(!readOnly&&!fixed&&measuresPpd(type)){pe.sel=vFirstFrom(null);pe.site=pe.sel!=null?siteOrder(pe.sel)[0]:0;} // 新しい検査は最初に測る歯を選んだ状態で始める
+  // 新しい検査（患者ページの「＋ 基本検査」等から）は、まず欠損歯の登録から（前回の欠損は登録済み。終わったら「テンキーで入れる」か「声で入れる」）
+  if(route.intro){delete route.intro;if(!readOnly&&!fixed&&!dr){pe.intro=true;pe.introMiss0=ORDER.filter(n=>pe.teeth[n].missing).length;pe.tapMode='miss';pe.tapReturn={sel:pe.sel,site:pe.site};pe.sel=null;}}
   const st=examStats(pe.teeth,type);
   const title=fixed?(EXAM_LABEL[type]+(readOnly?'（閲覧）':'の編集')):EXAM_LABEL[type];
   app.innerHTML=`
     <header class="bar"><button class="back" onclick="APP.go({name:'patientDetail',patientId:${jsq(pid)}})">◀ 戻る</button><div class="htxt"><h1>${title}</h1><div class="sub">${esc(patient?patient.name:'')}　<span class="mono">${esc(patient?patient.no:'')}</span></div></div><div class="hbtns"><button class="hbtn-help" onclick="APP.help('marks')" aria-label="印の見方">❓</button><button id="hdr-save" style="border:none;color:#fff;font-weight:700;font-size:.9rem;padding:10px 18px;border-radius:12px;cursor:pointer" onclick="APP.hdrBtn()"></button></div></header>
-    <div class="wrap wide">
-      ${readOnly?`<div class="banner" style="margin-top:14px;background:#f1f5f9;border-color:#cbd5e1;color:#334155">🔒 保存済みの検査を<b>見るだけ</b>で開いています（うっかり書き換えないため）。直すときは <button class="btn-primary" style="width:auto;min-height:44px;padding:8px 16px;margin-left:6px" onclick="APP.startEdit()">✏️ 編集する</button>${carriedList().length?`<div style="margin-top:6px;font-size:.8rem">「前」＝この検査では確認せず前回値のまま記録した歯（${carriedList().length}歯）</div>`:''}</div>`:''}
-      ${readOnly?'':'<div id="missbar" style="margin-top:12px"></div>'}
-      ${hasVoice(type)&&!readOnly?`<div class="card" id="dict-row" style="display:none;padding:10px 14px;margin-top:10px">
+    <div class="wrap wide pe-wrap">
+     <div id="pe-main" class="${peMainClass()}">
+      ${readOnly?`<div class="banner pe-ro" style="background:#f1f5f9;border-color:#cbd5e1;color:#334155"><span>🔒 保存済みの検査を<b>見るだけ</b>で開いています。</span><button class="btn-primary" style="width:auto;min-height:44px;padding:8px 16px" onclick="APP.startEdit()">✏️ 編集する</button>${carriedList().length?`<span style="font-size:.8rem">「前」＝確認せず前回値のまま記録した歯（${carriedList().length}歯）</span>`:''}${hasPlaque(type)?`<span style="flex:1"></span>${vtabsHTML()}<span id="plq-head" class="plq-head"></span>`:''}</div>`
+      :`<div class="pe-tools" id="pe-tools">
+        ${hasVoice(type)?`<button id="vbtn" class="vbtn${vc.active||vc.dict?' on':''}" onclick="APP.vToggle()">${vc.active||vc.dict?'● 音声 停止':'🎤 音声入力'}</button>`:''}
+        ${hasPlaque(type)?vtabsHTML():''}
+        <span id="plq-head" class="plq-head"></span>
+        <span style="flex:1"></span>
+        <button class="chip" id="exr-chip" onclick="APP.toBelow()"></button>
+      </div>`}
+      ${hasVoice(type)&&!readOnly?`<div class="card" id="dict-row" style="display:none;padding:8px 12px">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-          <input id="v-dict" class="ic" style="flex:1;min-width:240px;font-size:1.15rem;padding:12px 14px" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done"
+          <input id="v-dict" class="ic" style="flex:1;min-width:240px;font-size:1.15rem;padding:10px 14px" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done"
             placeholder="ここで話す：キーボードの🎤を押して「3 3 2」" oninput="APP.dictInput()" oncompositionend="APP.dictInput()" onkeydown="if(event.key==='Enter'&&!event.isComposing){event.preventDefault();APP.dictCommit();}" onblur="APP.dictBlur()"/>
           <button class="nb" onclick="APP.dictClose()">閉じる</button></div>
-        <div id="dict-status" style="margin-top:8px;font-size:.88rem;font-weight:700"></div></div>`:''}
-      ${hasVoice(type)&&!readOnly?'<div class="card" id="voice-bar" style="padding:8px 14px;margin-top:10px"></div>':''}
-      <div class="card" id="arch-card" style="padding:12px 0;margin-top:14px">
+        <div id="dict-status" style="margin-top:6px;font-size:.84rem;font-weight:700"></div></div>`:''}
+      ${hasVoice(type)&&!readOnly?'<div class="card" id="voice-bar" style="padding:8px 14px"></div>':''}
+      <div class="card" id="arch-card">
         <div class="rlbar"><span class="rl">右 R</span><span class="arch-label" style="margin:0">上顎 UPPER</span><span class="rl">左 L</span></div>
         <div class="arch"><div class="arch-inner" id="arch-u"></div></div>
-        <div style="height:1px;background:var(--line2);margin:8px 16px"></div>
+        <div style="height:1px;background:var(--line2);margin:5px 16px"></div>
         <div class="arch"><div class="arch-inner" id="arch-l"></div></div>
-        <div class="rlbar" style="margin-top:5px"><span class="rl">右 R</span><span class="arch-label" style="margin:0">下顎 LOWER</span><span class="rl">左 L</span></div>
+        <div class="rlbar" style="margin-top:3px"><span class="rl">右 R</span><span class="arch-label" style="margin:0">下顎 LOWER</span><span class="rl">左 L</span></div>
       </div>
-      ${type==='mixed'?`<div class="card" style="padding:14px 18px;margin-top:14px;font-size:.84rem;color:#4c1d95;background:#faf5ff;border-color:#ddd6fe">🍼 P混検は<b>乳歯も含めて</b>検査し、ポケット（深さ）は測りません。上の歯式で「🍼 乳歯」「🦷 欠損」を登録し、下のプラークチャートと口全体の所見を入力してください。まだ生えていない歯は「欠損」で登録し、生えてきたら<b>その歯をタップ</b>すると欠損から戻せます。</div>`:'<div class="card" id="editor" style="padding:20px;margin-top:14px"></div>'}
-      ${type==='mixed'?'<div class="card" id="findings-card" style="padding:16px 18px;margin-top:14px"></div>':''}
-      ${hasPlaque(type)?'<div class="card" id="plq-card" style="padding:16px 18px;margin-top:14px"></div>':''}
-      ${(pe.cmpBase||(pe.carriedIn&&pe.carriedIn.length)||pe.newerBasic)&&!readOnly?`<div class="banner" id="banner" style="margin-top:14px"></div>`:''}
-      ${type==='mixed'?`      <div class="stats" style="margin-top:14px;grid-template-columns:repeat(3,1fr)">
+      ${hasPlaque(type)?'<div class="card" id="plq-card"></div>':''}
+      <div id="dock" class="dock">
+      ${type==='mixed'?`<div class="card ed-info" id="findings-card"></div><div class="card ed-pad" id="mixpad"><div id="missbar"></div></div>`:'<div id="editor"></div>'}
+      ${(pe.cmpBase||(pe.carriedIn&&pe.carriedIn.length)||pe.newerBasic)&&!readOnly?`<div class="banner" id="banner"></div>`:''}
+      ${type==='mixed'?`      <div class="stats" style="grid-template-columns:repeat(3,1fr)">
         <div class="stat"><div class="v" id="s-pcr">—</div><div class="l">PCR</div></div>
         <div class="stat"><div class="v" id="s-perm">${dentitionCount(pe.teeth).perm}</div><div class="l">永久歯(本)</div></div>
         <div class="stat"><div class="v" id="s-prim" style="color:#6d28d9">${dentitionCount(pe.teeth).prim}</div><div class="l">乳歯(本)</div></div>
       </div>
-`:`      <div class="stats" style="margin-top:14px;grid-template-columns:repeat(4,1fr)">
-        <div class="stat"><div class="v" id="s-bop">${st.bopPct==null?'—':st.bopPct+'%'}</div><div class="l">出血(BOP)率（${type==='precision'?'部位':'歯'}あたり）</div></div>
+`:`      <div class="stats" style="grid-template-columns:repeat(4,1fr)">
+        <div class="stat"><div class="v" id="s-bop">${st.bopPct==null?'—':st.bopPct+'%'}</div><div class="l">出血率（${type==='precision'?'部位':'歯'}）</div></div>
         <div class="stat"><div class="v ${st.deep>0?'alert':''}" id="s-deep">${st.deep}</div><div class="l">4mm以上(${st.deepUnit})</div></div>
         <div class="stat"><div class="v" id="s-pus" style="color:#2563eb">${isOnePoint(type)?(st.pus||0):'—'}</div><div class="l">排膿(歯)</div></div>
         <div class="stat"><div class="v" id="s-rec">${st.measured}/${examGaps(pe.teeth,type).usable}</div><div class="l">記録歯数</div></div>
       </div>
 `}
+      ${type==='mixed'?'<div class="dock-leg"><span>マス：歯番（乳歯は A〜E・紫）</span><span>大きな数字＝プラークのある面の数</span><span>·＝未記録</span><span>—＝欠損</span></div>'
+        :`<div class="dock-leg"><span><i class="sw" style="background:var(--ok-bg);border:1px solid var(--ok)"></i>1–3</span><span><i class="sw" style="background:var(--warn-bg);border:1px solid var(--warn)"></i>4–5</span><span><i class="sw" style="background:var(--bad-bg);border:1px solid var(--bad)"></i>6+</span><span><i style="width:12px;height:12px;border-radius:50%;border:2px solid var(--bop);display:inline-block"></i>出血</span>${type==='precision'?'':'<span><i style="width:13px;height:13px;border-radius:50%;border:3px double #2563eb;display:inline-block"></i>排膿</span>'}<span><b class="chglg">変</b>前回から変化</span><span><b class="prvlg">前</b>前回値のまま</span><span>マス：深さ／出血／動揺度・「·」＝未入力</span></div>`}
+      </div>
+     </div>
+     <div class="pe-below">
       ${type==='mixed'?`      <div class="legend" style="margin-top:14px"><span>歯式のマス：歯番（乳歯は A〜E・紫）／大きな数字＝プラークのある面の数（·＝未記録）／—＝欠損</span></div>
 `:`      <div class="legend" style="margin-top:14px">
         <span><i class="sw" style="background:var(--ok-bg);border:1px solid var(--ok)"></i>1–3</span>
@@ -2864,6 +3067,7 @@ function renderPerio(pid,examId,newType){
         <button class="linkbtn" style="font-size:.76rem" onclick="APP.help('marks')">❓ 印の見方</button>
       </div>
 `}
+      ${type==='mixed'?`<div class="card" style="padding:12px 16px;margin-top:12px;font-size:.82rem;color:#4c1d95;background:#faf5ff;border-color:#ddd6fe">🍼 P混検は<b>乳歯も含めて</b>検査し、ポケット（深さ）は測りません。歯式で「乳歯」「欠損」を登録し、「プラーク」のタブで染め出した面を入れ、口全体の所見を入れてください。まだ生えていない歯は「欠損」で登録し、生えてきたら<b>その歯をタップ</b>すると欠損から戻せます。</div>`:''}
       <div class="row" style="margin-top:14px;gap:10px;align-items:center" id="date-row">
         <div style="flex:1"><label class="fl" style="font-size:.7rem;margin:0 0 2px">検査日</label><input type="date" class="ic" value="${esc(pe.date)}" max="${ymdToday()}" ${readOnly?'disabled':''} onchange="APP.peField('date',this.value)"/></div>
         <div style="flex:1"><label class="fl" style="font-size:.7rem;margin:0 0 2px">担当</label>
@@ -2877,29 +3081,44 @@ function renderPerio(pid,examId,newType){
       ${readOnly?`<button class="btn-primary" style="margin-top:16px" onclick="APP.startEdit()">✏️ この検査を編集する</button>`:`<button class="btn-primary" style="margin-top:16px" onclick="APP.peSave()">${fixed?'変更を保存する':'検査を保存する'}</button>`}
       <button style="width:100%;padding:12px;border:1px solid var(--soft);border-radius:16px;background:#fff;color:#374151;font-weight:600;font-size:.9rem;cursor:pointer;margin-top:10px" onclick="APP.printExam()">🖨 保存して印刷・PDF出力</button>
       ${fixed?`<button class="linkbtn" style="display:block;margin:14px auto 0;color:var(--bad)" onclick="APP.peDelete()">🗑 この検査を削除</button>`:''}
+     </div>
     </div>`;
   buildArch('arch-u',UPPER);buildArch('arch-l',LOWER);
-  renderEditor();refreshMissBar();refreshSaveBtn();refreshBanner();refreshPlaque();refreshFindings();
+  renderEditor();refreshMissBar();refreshSaveBtn();refreshBanner();refreshPlaque();refreshFindings();refreshExrChip();
   // 音声入力パネル（一点法のみ）。画面再入時はモード/カーソル/ログ/塗る印をリセット（前の患者の設定を持ち越さない）
   vc.mode='ppd';vc.cursor=(pe.sel!=null&&hasVoice(type))?pe.sel:null;vc.lastTooth=null;vc.bopQuad=null;vc.bopKind='bop';vc.log=[];vc.err='';vc.heard='';
-  vRefreshPanel();
+  vRefreshPanel();fitPe();
 }
+// ── v0.15：入力中にページをスクロールしない画面の部品 ──
+// 画面の上端からの位置を測り、歯式＋操作盤の高さを「画面の高さ−見出し」に合わせる（上に帯が出ていても1画面に収める）
+function fitPe(){const m=document.getElementById('pe-main');if(!m||typeof window.innerHeight!=='number'||!m.style||!m.style.setProperty)return;
+  const top=Math.round(m.getBoundingClientRect().top+(window.scrollY||window.pageYOffset||0));m.style.setProperty('--pe-top',top+'px');}
+function peMainClass(){return 'pe-main view-'+((pe&&pe.view)||'chart')+' t-'+(pe?pe.type:'basic')+(vc&&vc.dict?' dict-on':'')+(vc&&vc.active?' voice-on':'');}
+function refreshPeMain(){const m=document.getElementById('pe-main');if(m)m.className=peMainClass();
+  ['chart','plq'].forEach(k=>{const b=document.getElementById('tab-'+k);if(b&&b.setAttribute)b.setAttribute('aria-pressed',String((pe.view||'chart')===(k==='plq'?'plaque':'chart')));});}
+function vtabsHTML(){return `<div class="vtabs" role="tablist"><button id="tab-chart" onclick="APP.setView('chart')">🦷 ${pe.type==='mixed'?'歯式・所見':'歯式・深さ'}</button><button id="tab-plq" onclick="APP.setView('plaque')">プラーク <span id="tab-pcr" class="mono"></span></button></div>`;}
+// 上の段の「検査日・担当」（入力中は下に置いた欄へ飛ぶだけ。担当が空なら目立たせる）
+function refreshExrChip(){const c=document.getElementById('exr-chip');if(!c||!pe)return;const d=pe.date?pe.date.slice(5).replace('-','/'):'日付なし';
+  c.textContent=`📅 ${d}・担当 ${pe.examiner||'未選択'} ▾`;c.className='chip'+(pe.examiner?'':' warn');}
+if(typeof window!=='undefined'&&window.addEventListener){window.addEventListener('resize',()=>{if(route&&route.name==='perio')fitPe();});window.addEventListener('orientationchange',()=>setTimeout(fitPe,300));}
 // ── プラークチャート（精密・P混検） ──
 function plaqueToothHTML(n){const x=pe.teeth[n];const ro=pe.readOnly;
   if(x.missing||(pe.type!=='mixed'&&x.primary))return `<div class="plq-t miss"><span></span><span class="pn" style="grid-column:2;grid-row:2;display:flex;align-items:center;justify-content:center">${x.missing?'欠':'乳'}</span></div>`;
   const q=Math.floor(n/10);const right=q===1||q===4; // 患者の右側の歯は左が遠心
   const p=x.plq||[false,false,false,false];const b=(k,col,row)=>{const i=PLQ.indexOf(k);return `<button style="grid-column:${col};grid-row:${row}" class="${p[i]?'on':''}" ${ro?'disabled':''} onclick="APP.plqTog(${n},'${k}')">${PLQ_JA[k]}</button>`;};
   const rec=Array.isArray(x.plq);const none=rec&&!p.some(Boolean);
-  return `<div class="plq-t">${b('b',2,1)}${b(right?'d':'m',1,2)}<button style="grid-column:2;grid-row:2" class="pn ${rec?'rec':''} ${none?'none':''}" ${ro?'disabled':''} onclick="APP.plqTooth(${n})" title="タップで「この歯はプラークなし」">${toothDisp(n,x)}${none?'<br><small>なし</small>':''}</button>${b(right?'m':'d',3,2)}${b('l',2,3)}</div>`;}
+  return `<div class="plq-t">${b('b','1 / 4',1)}${b(right?'d':'m',1,2)}<button style="grid-column:2;grid-row:2" class="pn ${rec?'rec':''} ${none?'none':''}" ${ro?'disabled':''} onclick="APP.plqTooth(${n})" title="タップで「この歯はプラークなし」">${toothDisp(n,x)}${none?'<br><small>なし</small>':''}</button>${b(right?'m':'d',3,2)}${b('l','1 / 4',3)}</div>`;}
 function refreshPlaque(){const c=document.getElementById('plq-card');if(!c||!pe)return;const r=pcrOf(pe.teeth,pe.type);
   if(pe.type==='mixed'){const el=document.getElementById('s-pcr');if(el)el.textContent=r.pct==null?'—':r.pct+'%';}
+  const tp=document.getElementById('tab-pcr');if(tp)tp.textContent=r.pct==null?'':r.pct+'%';
   const blocks=[['右上',[18,17,16,15,14,13,12,11]],['左上',[21,22,23,24,25,26,27,28]],['右下',[48,47,46,45,44,43,42,41]],['左下',[31,32,33,34,35,36,37,38]]];
-  c.innerHTML=`<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-      <div><b style="font-size:.95rem">🦷 プラークチャート（PCR）</b>　<span class="mono" style="font-size:1.2rem;font-weight:700;color:${r.pct==null?'var(--faint)':r.pct>PCR_GOAL?'var(--bad)':'var(--ok)'}">${r.pct==null?'—':r.pct+'%'}</span> <span style="font-size:.74rem;color:var(--soft)">目標 ${PCR_GOAL}%以下</span>
-        <span style="font-size:.74rem;color:var(--soft)">記録 ${r.rec}/${r.present}歯・${r.surf}面</span></div>
-      ${pe.readOnly?'':`<button class="nb" style="font-weight:700" onclick="APP.plqRestNone()">未記録の歯はすべて「なし」</button>`}</div>
-    <p style="font-size:.72rem;color:var(--soft);margin:0 0 10px">染め出した面をタップ（赤＝プラークあり）。真ん中の歯番をタップで「この歯はなし」。前回の値は引き継ぎません。</p>
-    ${blocks.map(([lab,list])=>`<div style="font-size:.7rem;color:var(--soft);margin:0 0 4px">${lab}</div><div class="plq-row">${list.map(plaqueToothHTML).join('')}</div>`).join('')}`;}
+  // 見出し（PCR・一括「なし」・一つ戻す）は上の段に出す＝4段×8歯を1画面に収めるため
+  const hasHist=pe.hist&&pe.hist.length;
+  const hd=document.getElementById('plq-head');
+  if(hd)hd.innerHTML=`<b style="font-size:.9rem">🦷 PCR</b><span class="mono" style="font-size:1.3rem;font-weight:700;color:${r.pct==null?'var(--faint)':r.pct>PCR_GOAL?'var(--bad)':'var(--ok)'}">${r.pct==null?'—':r.pct+'%'}</span><span style="font-size:.72rem;color:var(--soft);line-height:1.25">目標 ${PCR_GOAL}%以下<br>記録 ${r.rec}/${r.present}歯・${r.surf}面</span>
+      ${pe.readOnly?'':`<button class="nb" style="font-weight:700" onclick="APP.plqRestNone()">未記録の歯はすべて「なし」</button><button class="nb" style="font-weight:700;color:${hasHist?'#0f766e':'#64748b'}" onclick="APP.undo()">↩ 戻す</button><span class="plq-hint" style="font-size:.72rem;color:var(--soft);white-space:normal;line-height:1.3">染め出した面をタップ（赤＝あり）<br>歯番のタップで「この歯はなし」</span>`}`;
+  c.innerHTML=`<span style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">プラークチャート（PCR）</span>`
+    +blocks.map(([lab,list])=>`<div class="plq-blk"><div class="plq-lab">${lab}</div><div class="plq-row">${list.map(plaqueToothHTML).join('')}</div></div>`).join('');}
 // ── P混検の口全体の所見 ──
 function refreshFindings(){const c=document.getElementById('findings-card');if(!c||!pe)return;const ro=pe.readOnly;
   c.innerHTML=`<b style="font-size:.95rem">口全体の所見（P混検）</b>
@@ -2910,65 +3129,75 @@ function rememberExaminer(v){try{if(v)localStorage.setItem('perio_last_examiner'
 function lastExaminer(){try{const v=localStorage.getItem('perio_last_examiner');return v&&store.staff.some(s=>s.name===v)?v:'';}catch(_){return '';}}
 // 今回まだ触っていない（前回値のまま）歯か
 function isCarried(n){const x=pe.teeth[n];if(!x||x.missing||x.primary)return false;
-  if(touchSet('ppd').has(n))return false;
+  if(pe.type==='precision'){const S=touchSet('site');if(!(x.ppd6&&x.ppd6.some((v,i)=>v!=null&&!S.has(n*10+i))))return false;} // 値のある部位を全部確かめたら「前」でない
+  else if(touchSet('ppd').has(n))return false;
   if(pe.carriedIn)return pe.carriedIn.indexOf(n)>=0; // 保存済みの検査は保存時の記録に従う（前回の検査を消しても「前」は消えない）
   if(!pe.cmpBase)return false;
   return x.ppd!=null||!!(x.ppd6&&x.ppd6.some(v=>v!=null));}
 function carriedList(){return ORDER.filter(isCarried);}
-function touchSet(k){if(!pe)return new Set();if(!pe.touch)pe.touch={ppd:new Set(),mob:new Set(),bop:new Set()};return pe.touch[k];}
+function touchSet(k){if(!pe)return new Set();if(!pe.touch)pe.touch={ppd:new Set(),mob:new Set(),bop:new Set()};if(!pe.touch[k])pe.touch[k]=new Set();return pe.touch[k];}
+// 精密：部位ごとの「今回確かめた」（歯番*10+部位）。1部位だけ入れても残りの部位は前回値のまま＝その歯は「前」のまま
+function touchSite(n,i){if(pe&&n!=null&&i!=null)touchSet('site').add(n*10+i);}
+function touchAllSites(n){for(let i=0;i<6;i++)touchSite(n,i);}
+const TOUCH_KEYS=['ppd','mob','bop','site'];
 function touchT(n,k){if(pe&&n!=null)touchSet(k).add(n);}
-// 前回値の案内帯（今回の変更数・前回値のまま・反映した欠損）
+// 前回値の案内帯（前回値のまま・確認済みボタンを先頭に。今回の変更数・反映した欠損などは小さく下に）
 function refreshBanner(){const b=document.getElementById('banner');if(!b||!pe)return;
-  if(pe.type==='mixed'){const ch=changedCount(pe.teeth,pe.cmpBase,NOBOP);b.innerHTML=`前回（${ymdJP(pe.baseDate)}）の歯式（乳歯・欠損）を引き継いでいます。生え変わった歯は「🍼 乳歯」で切り替えてください。　歯式の変更：<b class="mono">${ch}</b> 歯`+(pe.reflected&&pe.reflected.length?`<div style="margin-top:6px;color:#9a3412">🦷 その後の検査で欠損になった歯（${pe.reflected.map(n=>regionName(n)).join('・')}）を反映しました。</div>`:'');return;}
-  if(!pe.cmpBase&&!pe.carriedIn){b.innerHTML='';return;} // 新しい検査で前回が無い（初めての精密など）＝案内なし
+  if(pe.type==='mixed'){const ch=changedCount(pe.teeth,pe.cmpBase,NOBOP);b.innerHTML=`前回（${ymdJP(pe.baseDate)}）の歯式（乳歯・欠損）を引き継いでいます。生え変わった歯は「乳歯」で切り替えてください。<div style="margin-top:4px">歯式の変更：<b class="mono">${ch}</b> 歯</div>`+(pe.reflected&&pe.reflected.length?`<div style="margin-top:6px;color:#9a3412">🦷 その後の検査で欠損になった歯（${pe.reflected.map(n=>regionName(n)).join('・')}）を反映しました。</div>`:'');return;}
+  if(!pe.cmpBase&&!pe.carriedIn){b.innerHTML='';b.style.display='none';return;} // 新しい検査で前回が無い（初めての精密など）＝案内なし
+  b.style.display='';
   const ch=changedCount(pe.teeth,pe.cmpBase,NOBOP);const cr=carriedList().length;const fixed=!!pe.examId&&!!pe.carriedIn;
-  b.innerHTML=(!pe.cmpBase?`保存済みの検査を編集中です。比べる前回の検査が見つかりません（削除された可能性）。`
+  b.innerHTML=(cr?`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:.86rem"><span>前回値のまま <b class="mono" style="font-size:1.05rem">${cr}</b> 歯</span>
+      <button class="nb" style="font-weight:700;padding:6px 10px" onclick="APP.confirmCarried()">残りは前回と同じ（確認済み）</button></div>`:(pe.cmpBase?'<div style="color:#166534;font-weight:700">✓ 全歯を今回確認済み</div>':''))
+    +`<div style="margin-top:5px;font-size:.74rem;line-height:1.45">`+(!pe.cmpBase?`保存済みの検査を編集中です。比べる前回の検査が見つかりません（削除された可能性）。`
       :fixed?`保存済みの検査を編集中です。前回（${ymdJP(pe.baseDate)}）から <b class="mono" id="chcount">${ch}</b> 歯変化。`
-      :`前回（${ymdJP(pe.baseDate)}）の深さ・動揺度を初期表示しています（出血・排膿は空から）。<b>変わった歯だけ</b>修正してください。　今回の変更：<b class="mono" id="chcount">${ch}</b> 歯`)
-    +(pe.baseNote&&!fixed?`<div style="margin-top:6px;color:#1e3a8a">📌 ${esc(pe.baseNote)}。</div>`:'')
-    +(pe.newerBasic?`<div style="margin-top:6px;color:#9a3412">⚠ この前回値（${ymdJP(pe.baseDate)} の精密検査）より新しい基本検査（${ymdJP(pe.newerBasic.date)}）があります。深さが変わっている歯に注意してください。</div>`:'')
-    +(pe.reflected&&pe.reflected.length?`<div style="margin-top:6px;color:#9a3412">🦷 その後の検査で欠損になった歯（${pe.reflected.map(n=>regionName(n)).join('・')}）を欠損として反映しました。</div>`:'')
-    +(cr?`<div style="margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span>前回値のまま（今回まだ確認していない歯）：<b class="mono">${cr}</b> 歯 <span style="color:var(--soft);font-size:.72rem">紙に「前」と印刷されます</span></span>
-      <button class="nb" style="font-weight:700" onclick="APP.confirmCarried()">残りは前回と同じ（確認済み）</button></div>`:(pe.cmpBase?'<div style="margin-top:6px;color:#166534">✓ 全歯を今回確認済み</div>':''));}
+      :`前回（${ymdJP(pe.baseDate)}）の深さ・動揺度から開始（出血・排膿は空から）。<b>変わった歯だけ</b>直す。今回の変更 <b class="mono" id="chcount">${ch}</b> 歯`)+`</div>`
+    +(pe.baseNote&&!fixed?`<div style="margin-top:4px;font-size:.72rem;color:#1e3a8a">📌 ${esc(pe.baseNote)}。</div>`:'')
+    +(pe.newerBasic?`<div style="margin-top:4px;font-size:.72rem;color:#9a3412">⚠ この前回値（${ymdJP(pe.baseDate)} の精密検査）より新しい基本検査（${ymdJP(pe.newerBasic.date)}）があります。深さが変わっている歯に注意してください。</div>`:'')
+    +(pe.reflected&&pe.reflected.length?`<div style="margin-top:4px;font-size:.72rem;color:#9a3412">🦷 その後の検査で欠損になった歯（${pe.reflected.map(n=>regionName(n)).join('・')}）を欠損として反映しました。</div>`:'');}
 // ヘッダ右上のボタン：閲覧中は「編集する」、編集中は「保存」
 function refreshSaveBtn(){const b=document.getElementById('hdr-save');if(!b||!pe)return;
   if(pe.readOnly){b.textContent='✏️ 編集する';b.style.background='#b45309';return;}
   if(pe.dirty||!pe.examId){b.textContent='● 保存';b.style.background='var(--blue)';if(pe.dirty)scheduleDraft('exam');}
   else{b.textContent='保存済';b.style.background='#64748b';}}
-// 欠損歯登録モード：歯式タップで欠損／解除（検査前にまとめて登録）
+// 操作盤の上の段＝モード切替（深さ／動揺度はテンキー、出血・欠損・乳歯は歯式のマスをタップ）。P混検はテンキーが無いので説明と「一つ戻す」まで
 function missBarHTML(){
-  const tm=pe.tapMode;
-  const MODEC={bop:'#dc2626',mob:'#374151',miss:'#334155',prim:'#6d28d9'};
-  const mbtn=(m,label)=>`<button aria-pressed="${tm===m}" style="border:1.5px solid ${MODEC[m]};background:${tm===m?MODEC[m]:'#fff'};color:${tm===m?'#fff':MODEC[m]}" onclick="APP.setTapMode('${m}')">${label}${tm===m?'（終了）':''}</button>`;
-  // サブ値ボタン（連続入力用の「塗る値」）
-  let sub='';
-  if(tm==='bop'){
-    const p=(v,l,c)=>`<button style="min-height:44px;padding:9px 14px;border:1.5px solid ${c};border-radius:11px;font-weight:700;font-size:.82rem;cursor:pointer;background:${pe.bopPaint===v?c:'#fff'};color:${pe.bopPaint===v?'#fff':c}" onclick="APP.setBopPaint('${v}')">${l}</button>`;
-    sub=`<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><span style="font-size:.72rem;color:var(--soft);align-self:center">タップで付与：</span>${p('bop','＋ BOP(赤)','#dc2626')}${p('pus','排膿(青)','#2563eb')}${p('none','− 消す','#64748b')}</div>`;
-  }else if(tm==='mob'){
-    const p=v=>`<button style="min-height:44px;min-width:48px;padding:9px 16px;border:1.5px solid #374151;border-radius:11px;font-weight:700;font-size:.9rem;cursor:pointer;background:${pe.mobPaint===v?'#374151':'#fff'};color:${pe.mobPaint===v?'#fff':'#374151'}" onclick="APP.setMobPaint(${v})">${v}</button>`;
-    sub=`<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><span style="font-size:.72rem;color:var(--soft);align-self:center">タップで付与：動揺度</span>${[0,1,2,3].map(p).join('')}</div>`;
-  }
-  const hints={bop:'選んだ印を歯式のマスに<b>タップで付与</b>（同じ歯を再タップで解除）。連続でどんどんタップできます。',
-    mob:'選んだ動揺度を歯式のマスに<b>タップで付与</b>。連続入力できます。',
-    miss:'<b>歯式をタップ</b>で欠損／解除。',prim:'<b>前歯〜乳臼歯（1〜5番）をタップ</b>で乳歯／永久歯を切替。'};
-  const missCnt=ORDER.filter(n=>pe.teeth[n].missing).length;
-  // 精密（六点法）はBOP/動揺度のタップ塗り非対応（歯単位のbopと部位単位のbop6が混ざるため）
-  const prec=pe.type==='precision';
-  const hint=tm?hints[tm]:`タップ入力：${prec?'欠損':pe.type==='mixed'?'欠損・乳歯':'BOP・動揺度・欠損'}。欠損 <b>${missCnt}</b> 歯。`;
-  const hasHist=pe.hist&&pe.hist.length;
-  const undoBtn=`<button style="border:1.5px solid ${hasHist?'#0f766e':'#cbd5e1'};background:#fff;color:${hasHist?'#0f766e':'#64748b'}" onclick="APP.undo()">↩ 一つ戻す</button>`;
-  return `<div class="tbar">
-    ${hasVoice(pe.type)?`<button id="vbtn" class="vbtn${vc.active||vc.dict?' on':''}" onclick="APP.vToggle()">${vc.active||vc.dict?'● 音声 停止':'🎤 音声入力'}</button>`:''}
-    ${prec||pe.type==='mixed'?'':mbtn('bop','🩸 出血(BOP)')+mbtn('mob','〰 動揺度')}${mbtn('miss','🦷 欠損')}${pe.type==='mixed'||ORDER.some(n=>pe.teeth[n].primary)?mbtn('prim','🍼 乳歯'):''}
-    ${measuresPpd(pe.type)&&ORDER.some(n=>{const x=pe.teeth[n];return !x.missing&&!x.primary&&x.mobility==null;})?`<button style="border:1.5px solid #374151;background:#fff;color:#374151" onclick="APP.mobRestZero()">動揺度：残りを全部0</button>`:''}
-    <span style="flex:1"></span>${undoBtn}
-  </div>
-  ${sub}
-  ${tm?`<div style="margin-top:8px;font-size:.74rem;color:var(--soft)">${hint}</div>`:''}`;
+  const tm=pe.tapMode,prec=pe.type==='precision',mixed=pe.type==='mixed',pm=pe.padMode||'ppd';
+  const b=(key,label,col,on,sub)=>`<button class="${on?'on':''}" style="--mc:${col}" aria-pressed="${on}" onclick="APP.setMode('${key}')">${label}${sub?`<small>${sub}</small>`:''}</button>`;
+  const missCnt=ORDER.filter(n=>pe.teeth[n].missing).length,primCnt=ORDER.filter(n=>pe.teeth[n].primary&&!pe.teeth[n].missing).length;
+  let h='';
+  if(!mixed){const pr=modeProgress();
+    h+=b('ppd','深さ','#2563eb',!tm&&pm==='ppd',`済 ${pr.ppd}/${pr.all}`);h+=b('mob','動揺度','#374151',(!tm||tm==='mob')&&pm==='mob',`${pr.mob}/${pr.all}`);
+    h+=prec?b('bop','🩸 出血','#dc2626',!tm&&pm==='bop',pr.bop?pr.bop+'歯':'この歯'):b('bop','🩸 出血','#dc2626',tm==='bop',pr.bop?pr.bop+'歯':'タップ');}
+  h+=b('miss','🦷 欠損','#475569',tm==='miss',missCnt?missCnt+'歯':'');
+  if(mixed||ORDER.some(n=>pe.teeth[n].primary))h+=b('prim','🍼 乳歯','#6d28d9',tm==='prim',primCnt?primCnt+'本':'');
+  let out=`<div class="modebar">${h}</div>`;
+  if(mixed){const hasHist=pe.hist&&pe.hist.length;
+    const hint=tm==='miss'&&pe.intro?`🦷 <b>まず欠損歯を登録</b><span>ない歯・まだ生えていない歯をタップ（もう一度で戻す）。乳歯は「🍼 乳歯」を選んでタップ。</span><span>欠損 <b class="mono">${missCnt}</b> 歯${pe.introMiss0?`（前回までの ${pe.introMiss0} 歯は登録済み）`:''}</span>`
+      :tm==='miss'?`🦷 <b>歯式のマスをタップ</b>で 欠損 ⇄ 戻す。<span>欠損 <b class="mono">${missCnt}</b> 歯</span>`
+      :tm==='prim'?`🍼 <b>1〜5番の歯をタップ</b>で 乳歯 ⇄ 永久歯。<span>乳歯 <b class="mono">${primCnt}</b> 本</span>`
+      :`🍼 P混検はポケットを測りません。<span>上の「乳歯」「欠損」を選んで歯式をタップ。染め出しは「プラーク」のタブ。</span><span style="font-size:.76rem;color:var(--soft)">欠損の歯をそのままタップすると欠損から戻せます。</span>`;
+    out+=`<div class="pad" data-pad="4"><div class="k-hint k-w4 k-h3">${hint}</div>${pe.intro?`<button class="k-op k-w2 k-go" onclick="APP.introDone('plaque')">✓ 登録おわり<small>プラークへ</small></button>`:`<button class="k-op k-w2" onclick="APP.setView('plaque')">プラークへ →</button>`}<button class="k-op k-undo k-w2${hasHist?'':' none'}" onclick="APP.undo()">↩ 一つ戻す</button></div>`;}
+  return out;
 }
-function refreshMissBar(){const el=document.getElementById('missbar');if(el)el.innerHTML=missBarHTML();
-  const card=document.getElementById('arch-card');if(card)card.style.boxShadow=pe.tapMode?'0 0 0 2px '+({bop:'#dc2626',mob:'#374151',miss:'#64748b',prim:'#6d28d9'}[pe.tapMode]):'';}
+// 札の進み具合：深さ＝今回確かめた歯（「前回値のまま」は数えない・精密は6部位そろった歯）／動揺度＝入っている歯／出血＝付けた歯
+function modeProgress(){const prec=pe.type==='precision';const use=ORDER.filter(n=>{const x=pe.teeth[n];return !x.missing&&!x.primary;});
+  return {all:use.length,ppd:use.filter(n=>{const x=pe.teeth[n];return (prec?!!(x.ppd6&&x.ppd6.every(v=>v!=null)):x.ppd!=null)&&!isCarried(n);}).length,
+    mob:use.filter(n=>pe.teeth[n].mobility!=null).length,bop:use.filter(n=>{const x=pe.teeth[n];return x.bop||x.pus||!!(x.bop6&&x.bop6.some(Boolean));}).length};}
+// 声とテンキーの「いま入れる項目」を1つにする：テンキー側で切り替えたら声も、声で切り替えたらテンキー側も合わせる
+function padToVoice(){if(!pe||!hasVoice(pe.type))return;const m=pe.tapMode==='bop'?'bop':(pe.padMode||'ppd');
+  if(vc.mode!==m){vc.mode=m;vc.bopQuad=null;if(m==='bop')vc.bopKind=['bop','pus','none'].includes(pe.bopPaint)?pe.bopPaint:'bop';}
+  if(!pe.tapMode&&pe.sel!=null&&!vSkip(pe.sel))vc.cursor=pe.sel;else if(pe.tapMode==='bop'&&pe.tapReturn&&pe.tapReturn.sel!=null)vc.cursor=pe.tapReturn.sel;
+  vRefreshPanel();}
+function voiceToPad(m){if(!pe||pe.readOnly)return;
+  if(m==='bop'){if(pe.type!=='basic')return;if(pe.tapMode!=='bop'){if(pe.tapMode){pe.tapMode=null;pe.tapReturn=null;}pe.tapMode='bop';pe.intro=false;pe.tapReturn={sel:vc.cursor,site:0};pe.sel=null;}
+    if(['bop','pus','none'].includes(vc.bopKind))pe.bopPaint=vc.bopKind;}
+  else if(m==='ppd'||m==='mob'){if(pe.tapMode){pe.tapMode=null;pe.tapReturn=null;pe.intro=false;}pe.padMode=m;}}
+function refreshMissBar(){
+  if(pe.type!=='mixed'&&document.getElementById('editor')){const p=document.getElementById('ed-pad');if(p)p.innerHTML=padHTML();const i=document.getElementById('ed-info');if(i)i.innerHTML=infoHTML();}
+  else{const el=document.getElementById('missbar');if(el)el.innerHTML=missBarHTML();}
+  const card=document.getElementById('arch-card');if(card){card.style.boxShadow=pe.intro&&pe.tapMode?'0 0 0 3px #f59e0b':pe.tapMode?'0 0 0 2px '+({bop:'#dc2626',mob:'#374151',miss:'#64748b',prim:'#6d28d9'}[pe.tapMode]):'';
+    if(card.classList)card.classList.toggle('intro',!!(pe.intro&&pe.tapMode));}}
 function toothHTML(n){
   const t=pe.teeth[n];const prim=!!t.primary;const mx=toothMaxPpd(t);const sev=(t.missing||prim)?null:sevOf(mx);
   let bg='#fff';let pcol='#c0cad4';
@@ -3016,78 +3245,115 @@ function updateStats(){
   const de=document.getElementById('s-deep');de.textContent=st.deep;de.className='v'+(st.deep>0?' alert':'');
   document.getElementById('s-rec').textContent=st.measured+'/'+examGaps(pe.teeth,pe.type).usable;
   const sp=document.getElementById('s-pus');if(sp)sp.textContent=isOnePoint(pe.type)?(st.pus||0):'—';
+  if(pe.tapMode){const i=document.getElementById('ed-info');if(i)i.innerHTML=infoHTML();}
   refreshBanner();
 }
 function siteStripHTML(t){
-  return siteRows(pe.sel).map(([lab,keys])=>`<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
-    <span style="font-size:.64rem;color:var(--soft);width:30px;flex:0 0 30px">${lab}</span>
+  return siteRows(pe.sel).map(([lab,keys])=>`<div class="sr"><span class="sl">${lab}</span>
     ${keys.map(k=>{const i=SITE6.indexOf(k);const v=t.ppd6?t.ppd6[i]:null;const bop=t.bop6&&t.bop6[i];const active=pe.site===i;const sev=t.missing?null:sevOf(v);const bg=sev?SEV[sev].bg:'#fff';const fg=sev?SEV[sev].fg:'#c0cad4';
-      return `<button onclick="APP.selSite(${i})" style="flex:1;position:relative;border:1px solid ${active?'var(--blue)':'var(--line)'};box-shadow:${active?'0 0 0 2px var(--blue-bg)':'none'};background:${bg};border-radius:9px;padding:6px 0;cursor:pointer">
-        <span style="font-size:.55rem;color:var(--faint);display:block;line-height:1">${SITE_SHORT[k]}</span>
-        <span class="mono" style="font-size:1.15rem;font-weight:600;color:${fg};line-height:1.2">${t.missing?'—':(v==null?'·':v)}</span>
-        ${bop&&!t.missing?'<span style="position:absolute;top:3px;right:4px;width:7px;height:7px;border-radius:50%;background:var(--bop)"></span>':''}
+      return `<button onclick="APP.selSite(${i})" aria-pressed="${active}" style="border:1.5px solid ${active?'var(--blue)':'var(--line)'};box-shadow:${active?'0 0 0 2px var(--blue-bg)':'none'};background:${bg}">
+        <span style="font-size:.58rem;color:var(--soft);display:block;line-height:1">${SITE_SHORT[k]}</span>
+        <span class="mono" style="font-size:1.3rem;font-weight:700;color:${fg};line-height:1.2">${t.missing?'—':(v==null?'·':v)}</span>
+        ${bop&&!t.missing?'<span style="position:absolute;top:3px;right:4px;width:8px;height:8px;border-radius:50%;background:var(--bop)"></span>':''}
       </button>`;}).join('')}
   </div>`).join('');
 }
-function renderEditor(){
-  const ed=document.getElementById('editor');if(!ed)return;const n=pe.sel;const ro=pe.readOnly;
-  if(n==null){ed.innerHTML=pe.done
-    ?'<p style="text-align:center;color:#166534;font-weight:700;padding:12px 0;font-size:.95rem">✅ 最後の歯まで入力しました。未入力がないか確かめて保存してください。</p><p style="text-align:center;color:var(--faint);font-size:.78rem;margin:0">直すときは歯式の歯をタップ</p>'
-    :'<p style="text-align:center;color:var(--faint);padding:12px 0;font-size:.9rem">歯式から歯をタップしてください。</p>';return;}
-  const prec=pe.type==='precision';const si=pe.site;
-  const t=pe.teeth[n];const bt=pe.baseline?pe.baseline[n]:null;
-  const dis=ro||t.missing||t.primary;
-  const curPpd=prec?(t.ppd6?t.ppd6[si]:null):t.ppd;
-  const curBop=prec?(t.bop6?!!t.bop6[si]:false):!!t.bop;
+// 操作盤の左＝今の歯（歯番・名前・この歯の値・前回値・直前に入れた歯）。モードの説明もここ
+function infoHTML(){
+  const ro=pe.readOnly,tm=ro?null:pe.tapMode,prec=pe.type==='precision',pm=pe.padMode||'ppd';const n=pe.sel;
+  const mobRest=!ro&&measuresPpd(pe.type)&&ORDER.some(x=>{const y=pe.teeth[x];return !y.missing&&!y.primary&&y.mobility==null;})?`<button class="nb" onclick="APP.mobRestZero()">動揺度：残りを全部0</button>`:'';
+  const auto=ro||tm?'':`<button class="advchk ${pe.auto?'on':''}" onclick="APP.toggleAuto()"><span class="bx">${pe.auto?'✓':''}</span>入れたら次の${prec&&pm==='ppd'?'部位':'歯'}へ</button>`;
+  const foot=(auto||mobRest)?`<div class="ei-foot">${auto}${mobRest}</div>`:'';
+  if(tm){const cnt=f=>ORDER.filter(x=>{const y=pe.teeth[x];return !y.missing&&!y.primary&&f(y);}).length;
+    const big={bop:`🩸 <b>出血・排膿</b>：歯式のマスをタップして付けます（もう一度タップで外す）。<br>付ける印は右で選びます（＋出血／排膿／−消す）。<div style="margin-top:6px">出血 <b class="mono" style="color:#dc2626">${cnt(y=>y.bop)}</b> 歯　排膿 <b class="mono" style="color:#2563eb">${cnt(y=>y.pus)}</b> 歯</div>`,
+      mob:`〰 <b>動揺度 <span class="mono" style="font-size:1.3rem">${pe.mobPaint}</span> を塗る</b>：歯式のマスをタップ（続けてどんどん）。<br>値は右のテンキー 0〜3 で選びます。終わったら「🖌 塗る」をもう一度。`,
+      miss:'🦷 <b>欠損</b>：歯式のマスをタップで 欠損 ⇄ 戻す。終わったら「✓ 終わる」。',
+      prim:'🍼 <b>乳歯</b>：1〜5番の歯をタップで 乳歯 ⇄ 永久歯。終わったら「✓ 終わる」。'}[tm];
+    if(tm==='miss'&&pe.intro){const c=ORDER.filter(x=>pe.teeth[x].missing).length;
+      return `<div class="ei-pop" role="status"><div class="ip-t">🦷 まず欠損歯を登録してください</div><div>上の歯式で<b>ない歯をタップ</b>（もう一度タップで戻す）。まだ生えていない歯も欠損で。</div>`
+        +`<div class="ip-c">欠損 <b class="mono">${c}</b> 歯${pe.introMiss0?`<span>前回までの ${pe.introMiss0} 歯は登録してあります</span>`:''}</div><div class="ip-n">終わったら右の「${hasVoice(pe.type)?'🎤 声で入れる／':''}テンキーで入れる」へ。</div></div>`;}
+    return `<div class="ei-big">${big}</div>${foot}`;}
+  if(n==null)return (pe.done
+    ?'<p style="text-align:center;color:#166534;font-weight:700;margin:6px 0 0;font-size:.95rem">✅ 最後の歯まで入力しました。未入力がないか確かめて保存してください。</p><p style="text-align:center;color:var(--soft);font-size:.8rem;margin:0">直すときは歯式の歯をタップ。次の項目は右の「動揺度」「出血」へ。</p>'
+    :'<p style="text-align:center;color:var(--soft);margin:10px 0 0;font-size:.92rem">歯式から歯をタップしてください。</p>')+foot;
+  const si=pe.site;const t=pe.teeth[n];const bt=pe.baseline?pe.baseline[n]:null;
   let prev='';
   if(bt){if(prec){const bv=bt.ppd6?bt.ppd6[si]:null;const bb=bt.bop6&&bt.bop6[si];prev=`前回 ${SITE_SHORT[SITE6[si]]}　深さ ${bt.missing?'欠損':(bv==null?'未':bv)}　出血 ${bb?'＋':'−'}　／ 動揺 ${bt.mobility==null?'未':bt.mobility}`;}
     else prev=`前回　深さ ${bt.missing?'欠損':(bt.ppd==null?'未':bt.ppd)}　動揺 ${bt.mobility==null?'未':bt.mobility}　出血 ${bt.bop?'＋':'−'}${bt.pus?'　排膿 ＋':''}`;}
-  const ppdLabel=prec?`歯周ポケット（mm）— ${SITE_SHORT[SITE6[si]]}${si<3?'頬側':'舌側'}`:'歯周ポケット（mm）最深部1点　<b style="color:var(--blue)">押すと次の歯へ</b>';
-  const navFn=prec?'APP.advanceSite':'APP.advance';
-  // 直前に入れた歯（自動で次へ進んだ後も、どの歯に何が入ったか分かるように）
   const le=pe.lastEntry&&pe.lastEntry.n!==n?pe.lastEntry:null;
-  const leHTML=le?`<span class="lehead" title="直前に入れた歯：${esc(regionNameT(le.n,pe.teeth[le.n]))}">✓ 直前 ${toothDisp(le.n,pe.teeth[le.n])}：${esc(le.text)}</span>`:'';
-  const mobHTML=`<label class="fl" style="font-size:.72rem;color:var(--soft)">動揺度（0–3）<span style="color:var(--faint)">　未入力は「·」</span></label>
-    <div class="seg">${[0,1,2,3].map(v=>`<button class="${t.mobility===v&&!t.missing?'on':''}" ${dis?'disabled':''} onclick="APP.setMob(${v})">${v}</button>`).join('')}</div>`;
-  const togHTML=`<div style="display:flex;gap:8px;margin-top:12px">
-      <button class="tog ${curBop&&!t.missing?'bop':''}" style="flex:1" aria-pressed="${!!(curBop&&!t.missing)}" ${dis?'disabled':''} onclick="APP.togBop()">${curBop&&!t.missing?`出血(BOP)＋${prec?' ・'+SITE_SHORT[SITE6[si]]:''}`:'出血(BOP) −'}</button>
-      ${!prec?`<button class="tog ${t.pus&&!t.missing?'pus':''}" style="flex:1" aria-pressed="${!!(t.pus&&!t.missing)}" ${dis?'disabled':''} onclick="APP.togPus()">${t.pus&&!t.missing?'排膿＋':'排膿 −'}</button>`:''}
-      <button class="tog ${t.missing?'miss':''}" ${ro?'disabled':''} onclick="APP.togMiss()">${t.missing?'欠損解除':'欠損'}</button>
-    </div>`;
-  const padHTML=`<label class="fl" style="font-size:.72rem;color:var(--soft);margin-top:${prec?0:16}px">${ppdLabel}</label>
-    <div class="pad">${[1,2,3,4,5,6,7,8,9].map(v=>`<button class="${curPpd===v&&!t.missing?'on':''}" ${dis?'disabled':''} onclick="APP.setPpd(${v})">${v}</button>`).join('')}</div>
-    <div style="display:flex;align-items:center;gap:8px;margin-top:9px"><span style="font-size:.72rem;color:var(--soft)">10mm以上</span>
-      <div class="stepper"><button ${dis?'disabled':''} onclick="APP.stepPpd(-1)">−</button><span class="sv">${t.missing?'欠':(curPpd==null?'未':curPpd)}</span><button ${dis?'disabled':''} onclick="APP.stepPpd(1)">＋</button></div></div>`;
-  // 精密：6部位を測ってから出血をまとめて入れる運用向けに、直前の歯の出血をこの画面から付けられる
-  const pt=prec&&pe.prevTooth!=null&&pe.prevTooth!==n?pe.prevTooth:null;
-  const prevBopHTML=pt!=null&&!ro?(()=>{const x=pe.teeth[pt];return `<div style="padding:10px 12px;border:1px dashed #fca5a5;border-radius:12px;background:#fff7f7">
-      <div style="font-size:.74rem;color:#991b1b;margin-bottom:6px">🩸 直前の歯 <b>${esc(regionNameT(pt,x))}</b> の出血（タップで付ける／外す）</div>
-      ${siteRows(pt).map(([lab,keys])=>`<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px"><span style="font-size:.64rem;color:var(--soft);width:30px">${lab}</span>
-        ${keys.map(k=>{const i=SITE6.indexOf(k);const on=x.bop6&&x.bop6[i];return `<button onclick="APP.togBopAt(${pt},${i})" aria-pressed="${!!on}" style="flex:1;min-height:44px;border:1.5px solid ${on?'var(--bop)':'#fecaca'};border-radius:9px;background:${on?'var(--bop)':'#fff'};color:${on?'#fff':'#991b1b'};font-weight:700;font-size:.8rem;cursor:pointer">${SITE_SHORT[k]}${on?' ＋':''}</button>`;}).join('')}</div>`).join('')}
-    </div>`;})():(prec&&!ro?'<div class="pbhint">🩸 1本の6部位を入れて次の歯へ進むと、ここに「直前の歯の出血」が出ます（6部位を測ってから出血をまとめて付けられます）。</div>':'');
-  ed.innerHTML=`
-    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px">
-      <div><span class="mono" style="font-size:1.25rem;font-weight:600;color:${t.primary?'#7c3aed':'var(--blue)'};margin-right:8px">${toothDisp(n,t)}</span><span style="font-size:.88rem;color:#374151">${regionNameT(n,t)}</span>${t.primary?'<span style="font-size:.6rem;font-weight:700;color:#6d28d9;background:#ede9fe;border-radius:5px;padding:1px 5px;margin-left:6px">乳歯</span>':''}${isCarried(n)?'<span style="font-size:.6rem;font-weight:700;color:#475569;background:#f1f5f9;border-radius:5px;padding:1px 5px;margin-left:6px">前回値のまま</span>':''}</div>
-      <div style="display:flex;align-items:center;gap:8px;min-width:0">${leHTML}${(!ro&&bt)?`<button class="nb" style="font-size:.76rem;padding:5px 10px;flex:0 0 auto" onclick="APP.revert()">前回値に戻す</button>`:''}</div>
-    </div>
-    ${t.primary?'<p style="font-size:.78rem;color:#6d28d9;background:#ede9fe;border-radius:10px;padding:8px 12px;margin:2px 0 8px">🍼 乳歯（A〜E）はこの検査では深さを測りません（自動送り・音声も飛ばします）。永久歯に生え変わっていたら「🍼 乳歯」で切り替えてください。</p>':''}
-    ${prev?`<p class="mono" style="font-size:.76rem;color:var(--warn);margin:0 0 10px">${prev}</p>`:'<div style="height:8px"></div>'}
-    ${ro?'<p style="font-size:.84rem;color:#334155;background:#f1f5f9;border-radius:10px;padding:8px 12px;margin:0 0 10px">🔒 見るだけで開いています。直すときは上の「✏️ 編集する」。</p>':''}
-    ${prec?`<div class="edgrid3"><div><div style="margin-bottom:10px">${siteStripHTML(t)}</div>${mobHTML}</div><div>${padHTML}${togHTML}</div><div>${prevBopHTML}</div></div>`
-      :`<div class="edgrid"><div>${mobHTML}${togHTML}</div><div>${padHTML}</div></div>`}
-    <div class="navb">
-      ${ro?'<span></span>':`<button class="advchk ${pe.auto?'on':''}" onclick="APP.toggleAuto()"><span class="bx">${pe.auto?'✓':''}</span>入力後に次の${prec?'部位':'歯'}へ</button>`}
-      <div style="display:flex;gap:8px"><button class="nb" onclick="${navFn}(-1,false)">← 前</button><button class="nb" onclick="${navFn}(1,false)">次 →</button></div>
-    </div>`;
+  const leHTML=le?`<span title="直前に入れた歯：${esc(regionNameT(le.n,pe.teeth[le.n]))}">✓ 直前 ${toothDisp(le.n,pe.teeth[le.n])}：${esc(le.text)}</span>`:'';
+  const bdg=(t.primary?'<span class="ei-bdg" style="color:#6d28d9;background:#ede9fe">乳歯</span>':'')+(isCarried(n)?'<span class="ei-bdg" style="color:#475569;background:#f1f5f9">前回値のまま</span>':'')+(t.missing?'<span class="ei-bdg" style="color:#fff;background:#64748b">欠損</span>':'')
+    +(prec&&!t.missing?`<span class="ei-bdg" style="color:#1d4ed8;background:#eaf1fe">${SITE_SHORT[SITE6[si]]}・${si<3?'頬側':'舌側'}</span>`:'');
+  const head=`<div class="ei-head"><span class="mono ei-no" style="color:${t.primary?'#7c3aed':'var(--blue)'}">${toothDisp(n,t)}</span><span class="ei-name">${regionNameT(n,t)}</span>${bdg}</div>`;
+  const mx=prec?(t.ppd6?t.ppd6[si]:null):t.ppd;const sev=t.missing||t.primary?null:sevOf(mx);
+  const mobV=t.missing||t.primary?'—':(t.mobility==null?'·':t.mobility);
+  const hint=ro?'':(t.missing?'欠損の歯です（右の「欠損 解除」で戻す）':t.primary?'乳歯は深さを測りません（自動送りも飛ばします）':pm==='mob'?'動揺度：0〜3 を押すと次の歯へ':(prec&&pm==='bop')?'出血：右の6部位をタップで付ける／外す':prec?'深さ：押すと次の部位へ（10mm以上は「10+」）':'深さ：押すと次の歯へ（10mm以上は「10+」）');
+  const mobTile=`<div class="ev mob ${!ro&&pm==='mob'?'on':''}"><span class="evl">動揺度（0–3）</span><span class="evv">${mobV}</span></div>`;
+  let vals;
+  if(prec)vals=`<div class="ei-sites">${siteStripHTML(t)}</div><div style="display:flex;gap:8px;align-items:center">${mobTile.replace('class="ev mob','style="flex:0 0 112px" class="ev mob')}<div class="ei-hint">${hint}</div></div>`;
+  else{const bopV=t.missing||t.primary?'—':(t.bop?'<span style="color:#dc2626">＋</span>':t.pus?'<span style="color:#2563eb;font-size:1.1rem">排膿</span>':'−');
+    vals=`<div class="ei-vals"><div class="ev ${!ro&&pm==='ppd'?'on':''}"><span class="evl">深さ（mm）</span><span class="evv" style="color:${sev?SEV[sev].fg:'var(--ink)'}">${t.missing?'—':t.primary?'乳':(mx==null?'·':mx)}</span></div>${mobTile}<div class="ev bop"><span class="evl">出血(BOP)・排膿</span><span class="evv">${bopV}</span></div></div>${hint?`<div class="ei-hint">${hint}</div>`:''}`;}
+  return head+vals+(prev?`<div class="ei-prev mono"><span>${prev}</span>${!ro?`<button class="nb" onclick="APP.revert()">前回値に戻す</button>`:''}</div>`:'')+`<div class="ei-le">${leHTML}</div>`
+    +(ro?'<div style="font-size:.8rem;color:#334155;background:#f1f5f9;border-radius:10px;padding:6px 10px">🔒 見るだけで開いています。直すときは「✏️ 編集する」。</div>':'')+foot;
+}
+// 精密：6部位を測って次の歯へ進んだら「直前の歯の出血」をまとめて付ける欄（最後の歯まで入れた後はその歯）
+function pbHTML(){
+  if(pe.type!=='precision'||pe.readOnly)return '';const n=pe.sel;
+  const pt=n!=null?(pe.prevTooth!=null&&pe.prevTooth!==n?pe.prevTooth:null):(pe.done&&pe.lastEntry&&pe.teeth[pe.lastEntry.n]&&!pe.teeth[pe.lastEntry.n].missing?pe.lastEntry.n:null);
+  if(pt==null)return '<div class="ed-pb"><div class="pbhint">🩸 1本の6部位を入れて次の歯へ進むと、ここに「直前の歯の出血」が出ます（6部位を測ってから出血をまとめて付けられます）。</div></div>';
+  const x=pe.teeth[pt];
+  return `<div class="ed-pb"><div class="pbbox">
+    <div style="font-size:.76rem;color:#991b1b;margin-bottom:6px">🩸 直前の歯 <b>${esc(regionNameT(pt,x))}</b> の出血（タップで付ける／外す）</div>
+    ${siteRows(pt).map(([lab,keys])=>`<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px"><span style="font-size:.64rem;color:var(--soft);width:30px">${lab}</span>
+      ${keys.map(k=>{const i=SITE6.indexOf(k);const on=x.bop6&&x.bop6[i];return `<button onclick="APP.togBopAt(${pt},${i})" aria-pressed="${!!on}" style="flex:1;min-height:48px;border:1.5px solid ${on?'var(--bop)':'#fecaca'};border-radius:10px;background:${on?'var(--bop)':'#fff'};color:${on?'#fff':'#991b1b'};font-weight:700;font-size:.82rem;cursor:pointer">${SITE_SHORT[k]}${on?' ＋':''}</button>`;}).join('')}</div>`).join('')}
+  </div></div>`;
+}
+// 操作盤の右＝モード切替＋テンキー（PCのテンキー型 7 8 9／4 5 6／1 2 3／0。右の列に 前・次・欠損、下に 10+ と 一つ戻す）
+function padHTML(){
+  const ro=pe.readOnly,tm=ro?null:pe.tapMode,prec=pe.type==='precision',pm=pe.padMode||'ppd';
+  const n=pe.sel;const t=n!=null?pe.teeth[n]:null;const hasHist=pe.hist&&pe.hist.length;
+  const undo=`<button class="k-op k-undo k-w2${hasHist?'':' none'}" onclick="APP.undo()">↩ 一つ戻す</button>`;
+  const navFn=(prec&&pm==='ppd')?'APP.advanceSite':'APP.advance';const paint=tm==='mob';
+  const prevK=`<button class="k-op" ${paint?'disabled':''} onclick="${navFn}(-1,false)">← 前</button>`,nextK=`<button class="k-op" ${paint?'disabled':''} onclick="${navFn}(1,false)">次 →</button>`;
+  if(ro)return `<div class="pad" data-pad="4"><div class="k-hint k-w4 k-h3">🔒 <b>見るだけ</b>で開いています。<span>歯式の歯をタップすると、その歯の値が左に出ます。</span></div><button class="k-op k-w2" style="background:#b45309;color:#fff;border-color:#b45309" onclick="APP.startEdit()">✏️ 編集する</button>${prevK}${nextK}</div>`;
+  const bar=`<div id="missbar">${missBarHTML()}</div>`;
+  if(tm==='bop'){const p=(v,l,c)=>`<button class="k-paint k-w4" style="border-color:${c};background:${pe.bopPaint===v?c:'#fff'};color:${pe.bopPaint===v?'#fff':c}" aria-pressed="${pe.bopPaint===v}" onclick="APP.setBopPaint('${v}')">${l}</button>`;
+    return bar+`<div class="pad" data-pad="4">${p('bop','＋ 出血（赤）','#dc2626')}${p('pus','排膿（青）','#2563eb')}${p('none','− 消す','#64748b')}<button class="k-op k-w2" onclick="APP.setMode('${pm}')">✓ 終わる</button>${undo}</div>`;}
+  if(tm==='miss'&&pe.intro){const v=hasVoice(pe.type);
+    return bar+`<div class="pad" data-pad="4"><div class="k-hint k-w4${v?'':' k-h2'}">欠損の登録が終わったら、入れ方を選んでください。</div>`
+      +(v?`<button class="k-op k-w4 k-voice" onclick="APP.introDone('voice')">🎤 声で入れる<small>キーボードのマイクを押して話す</small></button>`:'')
+      +`<button class="k-op k-w4 k-go" onclick="APP.introDone('pad')">テンキーで入れる →<small>${pe.type==='precision'?'6点法・':''}最初の歯から</small></button>${undo.replace('k-w2','k-w4')}</div>`;}
+  if(tm==='miss'||tm==='prim'){const c=tm==='miss'?ORDER.filter(x=>pe.teeth[x].missing).length:ORDER.filter(x=>pe.teeth[x].primary&&!pe.teeth[x].missing).length;
+    return bar+`<div class="pad" data-pad="4"><div class="k-hint k-w4 k-h3">${tm==='miss'?`🦷 <b>歯式のマスをタップ</b>で 欠損 ⇄ 戻す<span>欠損 <b class="mono">${c}</b> 歯</span>`:`🍼 <b>1〜5番の歯をタップ</b>で 乳歯 ⇄ 永久歯<span>乳歯 <b class="mono">${c}</b> 本</span>`}</div><button class="k-op k-w2" onclick="APP.setMode('${pm}')">✓ 終わる</button>${undo}</div>`;}
+  if(prec&&pm==='bop'){
+    if(!t||t.missing||t.primary)return bar+`<div class="pad" data-pad="4"><div class="k-hint k-w4 k-h3">🩸 歯式の歯をタップすると、その歯の6部位の出血をここで付けられます。</div>${prevK}${nextK}${undo}</div>`;
+    const cells=siteRows(n).map(([lab,keys])=>`<div class="k-hint" style="padding:4px;align-items:center;font-size:.74rem;border-style:solid">${lab}</div>`+keys.map(k=>{const i=SITE6.indexOf(k);const on=t.bop6&&t.bop6[i];
+      return `<button class="k-paint" style="border-color:${on?'#dc2626':'#fecaca'};background:${on?'#dc2626':'#fff'};color:${on?'#fff':'#991b1b'};font-size:.92rem" aria-pressed="${!!on}" onclick="APP.togBopAt(${n},${i})">${SITE_SHORT[k]}${on?'<br>＋':''}</button>`;}).join('')).join('');
+    return bar+`<div class="pad" data-pad="4">${cells}<div class="k-hint k-w4" style="font-size:.74rem;padding:4px 10px">この歯（${toothDisp(n,t)}）の部位をタップ：出血を付ける／外す</div>${prevK}${nextK}${undo}</div>`;}
+  const dis=!t||t.missing||t.primary;const mob=pm==='mob';
+  const cur=mob?(paint?pe.mobPaint:(t&&!t.missing?t.mobility:null)):(t&&!t.missing?(prec?(t.ppd6?t.ppd6[pe.site]:null):t.ppd):null);
+  const dg=v=>{const off=mob?(v>3||(!paint&&dis)):(v<1||dis);return `<button class="dg${cur===v&&!off?' on':''}" ${off?'disabled':''} onclick="APP.padKey(${v})">${v}</button>`;};
+  const k10=mob&&prec?`<button class="k-op" disabled>10+</button>`:mob?`<button class="k-op${paint?' on':''}" style="${paint?'background:#374151;color:#fff;border-color:#374151':''}" aria-pressed="${paint}" onclick="APP.mobPaintToggle()">🖌 塗る<small style="${paint?'color:#e5e7eb':''}">${paint?'終わる':'同じ値をタップ'}</small></button>`
+    :(()=>{const c10=cur10(n);return `<button class="k-op k-10${c10!=null&&c10>=10?' on':''}" ${dis?'disabled':''} onclick="APP.pad10()">10+<small>${c10!=null&&c10>=10?'今 '+c10+'mm':'押すたび+1'}</small></button>`;})();
+  const kMiss=`<button class="k-op k-miss tog${t&&t.missing?' on':''}" ${!t||paint||(t.primary&&!t.missing)?'disabled':''} onclick="APP.togMiss()">${t&&t.missing?'欠損<small style="color:inherit">解除</small>':'欠損<small>この歯</small>'}</button>`;
+  return bar+`<div class="pad" data-pad="4"${mob?' data-mob="1"':''}>${dg(7)}${dg(8)}${dg(9)}${prevK}${dg(4)}${dg(5)}${dg(6)}${nextK}${dg(1)}${dg(2)}${dg(3)}${kMiss}${dg(0)}${k10}${undo}</div>`;
+}
+// 10+ の数え始め：今回入れた値だけを見る（前回値のままの歯・部位は 10 から）
+function cur10(n){const t=n!=null?pe.teeth[n]:null;if(!t||t.missing)return null;
+  if(pe.type==='precision')return touchSet('site').has(n*10+pe.site)&&t.ppd6?t.ppd6[pe.site]:null;
+  return touchSet('ppd').has(n)?t.ppd:null;}
+function renderEditor(){
+  const ed=document.getElementById('editor');if(!ed)return;
+  ed.innerHTML=`<div class="card ed-info" id="ed-info">${infoHTML()}</div>${pbHTML()}<div class="card ed-pad" id="ed-pad">${padHTML()}</div>`;
 }
 // 統一undo：編集直前に歯式スナップショットを積む（タップ・編集・音声すべて対象）
-function histSnap(){return {teeth:clone(pe.teeth),touch:{ppd:[...touchSet('ppd')],mob:[...touchSet('mob')],bop:[...touchSet('bop')]},
+function histSnap(){return {teeth:clone(pe.teeth),touch:{ppd:[...touchSet('ppd')],mob:[...touchSet('mob')],bop:[...touchSet('bop')],site:[...touchSet('site')]},
   sel:pe.sel,site:pe.site,done:!!pe.done,prevTooth:pe.prevTooth==null?null:pe.prevTooth,lastEntry:pe.lastEntry||null,findings:Object.assign({},pe.findings||{}),
   vcur:vc.cursor,vlast:vc.lastTooth,dirty:!!pe.dirty};}
 function pushHist(){if(!pe)return;(pe.hist=pe.hist||[]).push(histSnap());if(pe.hist.length>80)pe.hist.shift();}
 // 戻したスナップショットを返す（無ければ null）。音声の位置（vcur）の戻し方は呼び出し側で決める
 function undoOne(){if(!pe||!pe.hist||!pe.hist.length)return null;const h=pe.hist.pop();
-  pe.teeth=h.teeth;if(!pe.touch)pe.touch={ppd:new Set(),mob:new Set(),bop:new Set()};['ppd','mob','bop'].forEach(k=>{pe.touch[k]=new Set(h.touch[k]);});
+  pe.teeth=h.teeth;if(!pe.touch)pe.touch={ppd:new Set(),mob:new Set(),bop:new Set()};TOUCH_KEYS.forEach(k=>{pe.touch[k]=new Set(h.touch[k]||[]);});
   pe.sel=h.sel;pe.site=h.site;pe.done=h.done;pe.prevTooth=h.prevTooth;pe.lastEntry=h.lastEntry;if(pe.findings)pe.findings=h.findings;
   if(pe.sel!=null&&!pe.teeth[pe.sel])pe.sel=null;
   // 何も変えていない状態まで戻ったら未保存の印を外す（日付・担当・所見を変えていれば残す）
@@ -3194,7 +3460,7 @@ window.APP={
   go,newPatient:()=>go({name:'patientForm'}),openPatient:id=>go({name:'patientDetail',patientId:id}),
   newExam:(pid,type)=>{const t=type||'basic';const today=ymdToday();const same=store.patientExams(pid).find(e=>(e.type||'basic')===t&&e.date===today);
     if(same&&confirm(`本日（${ymdJP(today)}）の${EXAM_LABEL[t]}がすでに保存されています。\nその検査を開きますか？\n（「キャンセル」で、新しくもう1件作ります）`)){APP.openExam(pid,same.id);return;}
-    if(!draftGuard('exam'))return;go({name:'perio',patientId:pid,examId:null,type:t});},
+    if(!draftGuard('exam'))return;go({name:'perio',patientId:pid,examId:null,type:t,intro:true});},
   openExam:(pid,eid)=>go({name:'perio',patientId:pid,examId:eid}), // 見るだけなので下書きは聞かない（編集を始めるとき＝startEdit で聞く）
   openViz:pid=>go({name:'viz',patientId:pid}),
   openImport:()=>{const el=document.getElementById('csvfile');el.value='';el.click();},
@@ -3351,30 +3617,66 @@ window.APP={
         if(touched.size&&!confirm(`検査日を ${ymdJP(v)} にすると、前回値の基準が ${nb.date?ymdJP(nb.date)+' の検査':'「なし」'}に変わります。\n今回入力した歯はそのまま残し、まだ触っていない歯をその値にします。よろしいですか？`)){
           const el=document.querySelector('#date-row input[type=date]');if(el)el.value=pe.date;return;}
         // 新しい基準で初期値を作り直し、今回触った歯とプラーク・所見は今の入力を残す（下書きと同じ仕組みで開き直す）
-        const keep={teeth:clone(pe.teeth),touch:{ppd:[...touchSet('ppd')],mob:[...touchSet('mob')],bop:[...touchSet('bop')]},findings:pe.findings,examiner:pe.examiner};
-        route=Object.assign({},route,{date:v});pe.dirty=false;renderPerio(pe.pid,null,pe.type);
+        const keep={teeth:clone(pe.teeth),touch:{ppd:[...touchSet('ppd')],mob:[...touchSet('mob')],bop:[...touchSet('bop')],site:[...touchSet('site')]},findings:pe.findings,examiner:pe.examiner};
+        // #6 欠損歯の登録の途中なら、開き直しても登録を続ける
+        route=Object.assign({},route,{date:v},pe.intro?{intro:true}:{});pe.dirty=false;renderPerio(pe.pid,null,pe.type);
         ORDER.forEach(n=>{const kt=keep.teeth[n],t=pe.teeth[n];
           if(keep.touch.ppd.includes(n)){pe.teeth[n]=kt;return;}
           if(!t.missing){if(keep.touch.bop.includes(n)){t.bop=kt.bop;t.pus=kt.pus;t.bop6=kt.bop6?kt.bop6.slice():null;}if(keep.touch.mob.includes(n))t.mobility=kt.mobility;}
           t.plq=kt.plq;});
-        ['ppd','mob','bop'].forEach(t=>{pe.touch[t]=new Set(keep.touch[t]);});pe.findings=keep.findings;pe.examiner=keep.examiner;pe.dirty=true;
+        TOUCH_KEYS.forEach(t=>{pe.touch[t]=new Set(keep.touch[t]||[]);});pe.findings=keep.findings;pe.examiner=keep.examiner;pe.dirty=true;
         refreshArch();updateStats();renderEditor();refreshMissBar();refreshPlaque();refreshFindings();refreshSaveBtn();
         const sel=document.querySelector('#date-row select');if(sel)sel.value=pe.examiner;
         toast(`前回値の基準を ${nb.date?ymdJP(nb.date)+' の検査':'なし'}に合わせました`);return;}
       route=Object.assign({},route,{date:v});}
-    pe[k]=v;pe.dirty=true;refreshSaveBtn();if(k==='examiner'&&v)rememberExaminer(v);},
-  setTapMode:m=>{if(pe.readOnly)return;const was=pe.tapMode;pe.tapMode=(was===m?null:m);
+    pe[k]=v;pe.dirty=true;refreshSaveBtn();if(k==='examiner'&&v)rememberExaminer(v);refreshExrChip();},
+  setTapMode:m=>{if(pe.readOnly)return;const was=pe.tapMode,wasIntro=!!pe.intro;pe.tapMode=(was===m?null:m);pe.intro=false;
     if(pe.tapMode&&!was){pe.tapReturn={sel:pe.sel,site:pe.site};pe.sel=null;}
+    else if(pe.tapMode&&wasIntro&&measuresPpd(pe.type)){const f=vFirstFrom(null);pe.tapReturn={sel:f,site:f!=null?siteOrder(f)[0]:0};}
     else if(!pe.tapMode&&pe.tapReturn){const r=pe.tapReturn;pe.tapReturn=null;const x=r.sel!=null&&pe.teeth[r.sel];
       const tg=x&&!x.missing&&!x.primary?r.sel:(r.sel!=null&&measuresPpd(pe.type)?vNextAfter(r.sel):null);
       if(tg!=null){pe.sel=tg;pe.site=tg===r.sel?r.site:siteOrder(tg)[0];if(hasVoice(pe.type))vc.cursor=tg;}} // タップ入力の前に入れていた歯へ戻る（欠損にしたなら次の歯）
+    if(wasIntro&&!pe.tapMode&&measuresPpd(pe.type)){const f=vFirstFrom(null);pe.sel=f;pe.site=f!=null?siteOrder(f)[0]:0;if(hasVoice(pe.type))vc.cursor=f;} // 欠損の登録の後は、測る最初の歯から
     renderEditor();refreshArch();refreshMissBar();},
-  setBopPaint:v=>{pe.bopPaint=v;refreshMissBar();},
+  setBopPaint:v=>{pe.bopPaint=v;if(hasVoice(pe.type)&&pe.tapMode==='bop'&&['bop','pus','none'].includes(v)){vc.bopKind=v;vRefreshPanel();}refreshMissBar();},
   setMobPaint:v=>{pe.mobPaint=v;refreshMissBar();},
-  undo:()=>{if(pe.readOnly)return;const h=undoOne();if(!h){toast('これ以上戻せません');return;}
+  // v0.15：操作盤のモード。深さ・動揺度＝テンキー（入れたら次の歯へ）、出血・欠損・乳歯＝歯式のマスをタップ
+  setMode:m=>{if(!pe||pe.readOnly)return;
+    if(m==='ppd'||m==='mob'||(m==='bop'&&pe.type==='precision')){if(pe.tapMode)APP.setTapMode(pe.tapMode);pe.padMode=m;
+      if(pe.sel==null&&measuresPpd(pe.type)){const f=vFirstFrom(null);if(f!=null)APP.selTooth(f);} // 最後まで入れた後に項目を変えたら、最初の歯から回る
+      padToVoice();renderEditor();refreshMissBar();return;}
+    APP.setTapMode(m);padToVoice();},
+  // テンキー：深さモードは 1〜9（押すと次の歯／部位へ）、動揺度モードは 0〜3（押すと次の歯へ）、塗るときは塗る値を選ぶ
+  padKey:v=>{if(!pe||pe.readOnly)return;
+    if(pe.tapMode==='mob'){if(v>=0&&v<=3)APP.setMobPaint(v);return;}
+    if((pe.padMode||'ppd')==='mob'){if(v>=0&&v<=3)APP.mobKey(v);return;}
+    if(v>=1&&v<=9)APP.setPpd(v);},
+  mobKey:v=>{if(pe.readOnly||pe.sel==null)return;const n=pe.sel,t=pe.teeth[n];if(t.missing||t.primary)return;
+    APP.setMob(v);pe.lastEntry={n,text:`動揺度 ${v}`};if(pe.type==='precision')pe.prevTooth=null;
+    if(pe.auto)APP.advance(1,true);else renderEditor();},
+  // 10mm以上：押すたびに 10→11→…→15（15の次は10）。次の歯へは「次 →」
+  pad10:()=>{if(pe.readOnly||pe.sel==null)return;const n=pe.sel,t=pe.teeth[n];if(t.missing||t.primary)return;const prec=pe.type==='precision';
+    const cur=cur10(n);const v=(cur==null||cur<10||cur>=15)?10:cur+1;
+    mut(()=>{touchT(n,'ppd');if(prec){touchSite(n,pe.site);if(!t.ppd6)t.ppd6=[null,null,null,null,null,null];t.ppd6[pe.site]=v;}else t.ppd=v;});
+    pe.lastEntry={n,text:prec?`${SITE_SHORT[SITE6[pe.site]]}${pe.site<3?'頬側':'舌側'} ${v}mm`:`深さ ${v}mm・動揺 ${t.mobility==null?'未':t.mobility}${t.bop?'・出血＋':''}${t.pus?'・排膿＋':''}`};
+    afterChange(n);},
+  // 欠損の登録を終える：how='voice'＝話す欄を開く（キーボードを出すため、押したその場で欄にフォーカス）／'plaque'＝P混検のプラークへ／それ以外＝テンキー
+  introDone:how=>{if(!pe||pe.readOnly)return;pe.intro=false;if(pe.tapMode)APP.setTapMode(pe.tapMode);
+    if(measuresPpd(pe.type)){const f=vFirstFrom(null);pe.sel=f;pe.site=f!=null?siteOrder(f)[0]:0;pe.done=false;if(hasVoice(pe.type))vc.cursor=f;}
+    pe.padMode='ppd';refreshArch();renderEditor();refreshMissBar();
+    if(how==='plaque'){APP.setView('plaque');return;}
+    if(how==='voice'&&hasVoice(pe.type)&&!vc.active&&!vc.dict){if(useKbdVoice())APP.dictOpen();else vStart();}},
+  mobPaintToggle:()=>{if(!pe||pe.readOnly||pe.type==='precision')return; /* 精密は歯式のタップで動揺度を入れない */pe.padMode='mob';APP.setTapMode('mob');},
+  // 歯式・深さ ⇄ プラーク（精密・P混検）の切り替え
+  setView:v=>{if(!pe)return;pe.view=v==='plaque'?'plaque':'chart';refreshPeMain();refreshPlaque();try{window.scrollTo(0,0);}catch(_){}},
+  toBelow:()=>{const el=document.getElementById('date-row');if(el)el.scrollIntoView({block:'center',behavior:'smooth'});},
+  undo:()=>{if(pe.readOnly)return;const cs=pe.sel,cst=pe.site;const h=undoOne();if(!h){toast('これ以上戻せません');return;}
+    // タップ入力（欠損の登録など）の間の操作を戻したときは歯が選ばれていない記録になる→今いた歯にとどまる
+    if(pe.sel==null&&!pe.tapMode&&!pe.done&&cs!=null&&pe.teeth[cs]&&!pe.teeth[cs].missing&&!pe.teeth[cs].primary){pe.sel=cs;pe.site=cst;}
+    let back=null;if(pe.tapMode&&pe.sel!=null){back=pe.sel;pe.tapReturn={sel:pe.sel,site:pe.site};pe.sel=null;}
     vc.cursor=(pe.sel!=null&&!vSkip(pe.sel))?pe.sel:h.vcur;vc.lastTooth=h.vlast;
     if(!pe.dirty)clearDraft('exam');refreshSaveBtn();refreshArch();updateStats();refreshMissBar();renderEditor();refreshPlaque();refreshFindings();
-    toast(pe.sel!=null?'1つ戻しました（'+regionNameT(pe.sel,pe.teeth[pe.sel])+'に戻りました）':'1つ戻しました');},
+    toast(pe.sel!=null?'1つ戻しました（'+regionNameT(pe.sel,pe.teeth[pe.sel])+'に戻りました）':back!=null?'1つ戻しました（終わると'+regionNameT(back,pe.teeth[back])+'に戻ります）':'1つ戻しました');},
   selTooth:n=>{
     const t=pe.teeth[n];const tm=pe.readOnly?null:pe.tapMode;
     if(tm==='miss'){pushHist();touchT(n,'ppd');t.missing=!t.missing;if(t.missing)clearForMissing(t);pe.dirty=true;refreshSaveBtn();refreshTooth(n);updateStats();refreshMissBar();return;}
@@ -3383,8 +3685,8 @@ window.APP={
       if(p==='bop'){const on=!(t.bop);t.bop=on;t.pus=false;}
       else if(p==='pus'){const on=!(t.pus);t.pus=on;t.bop=false;}
       else{t.bop=false;t.pus=false;}
-      pe.dirty=true;refreshSaveBtn();refreshTooth(n);updateStats();}return;}
-    if(tm==='mob'){if(pe.type==='precision')return;if(!t.missing&&!t.primary){pushHist();touchT(n,'mob');t.mobility=pe.mobPaint;pe.dirty=true;refreshSaveBtn();refreshTooth(n);}return;}
+      pe.dirty=true;refreshSaveBtn();refreshTooth(n);updateStats();refreshMissBar();}return;}
+    if(tm==='mob'){if(pe.type==='precision')return;if(!t.missing&&!t.primary){pushHist();touchT(n,'mob');t.mobility=pe.mobPaint;pe.dirty=true;refreshSaveBtn();refreshTooth(n);updateStats();refreshMissBar();}return;}
     if(pe.type==='mixed'){if(pe.readOnly)return;
       if(t.missing){if(confirm(`${regionName(n)}を「欠損」から戻しますか？（生えてきたとき）`)){pushHist();touchT(n,'ppd');t.missing=false;pe.dirty=true;refreshSaveBtn();refreshTooth(n);updateStats();refreshMissBar();refreshPlaque();toast(regionName(n)+'を戻しました');}return;}
       toast('「🍼 乳歯」か「🦷 欠損」を選んでから歯をタップしてください');return;}
@@ -3395,23 +3697,23 @@ window.APP={
     if(hasVoice(pe.type)&&!vSkip(n))vc.cursor=n; // 声の入力先も選んだ歯に合わせる
     if(old!=null)refreshTooth(old);refreshTooth(n);renderEditor();},
   selSite:i=>{pe.site=i;renderEditor();},
-  setPpd:v=>{if(pe.readOnly||pe.sel==null)return;const n=pe.sel;mut(()=>{const t=pe.teeth[n];if(t.missing)return;touchT(n,'ppd');if(pe.type==='precision'){if(!t.ppd6)t.ppd6=[null,null,null,null,null,null];t.ppd6[pe.site]=v;}else t.ppd=v;});
+  setPpd:v=>{if(pe.readOnly||pe.sel==null)return;const n=pe.sel;mut(()=>{const t=pe.teeth[n];if(t.missing)return;touchT(n,'ppd');if(pe.type==='precision'){touchSite(n,pe.site);if(!t.ppd6)t.ppd6=[null,null,null,null,null,null];t.ppd6[pe.site]=v;}else t.ppd=v;});
     const t=pe.teeth[n];pe.lastEntry={n,text:pe.type==='precision'?`${SITE_SHORT[SITE6[pe.site]]}${pe.site<3?'頬側':'舌側'} ${v}mm`:`深さ ${v}mm・動揺 ${t.mobility==null?'未':t.mobility}${t.bop?'・出血＋':''}${t.pus?'・排膿＋':''}`};
     afterChange(n);if(pe.auto&&!pe.readOnly){if(pe.type==='precision')APP.autoNextSite();else APP.advance(1,true);}},
-  stepPpd:d=>{if(pe.sel==null)return;mut(()=>{const t=pe.teeth[pe.sel];if(t.missing)return;touchT(pe.sel,'ppd');if(pe.type==='precision'){if(!t.ppd6)t.ppd6=[null,null,null,null,null,null];let cur=t.ppd6[pe.site];let v=(cur==null?(d>0?9:1):cur)+d;t.ppd6[pe.site]=Math.max(1,Math.min(15,v));}else{let v=(t.ppd==null?(d>0?9:1):t.ppd)+d;t.ppd=Math.max(1,Math.min(15,v));}});afterChange(pe.sel);},
+  stepPpd:d=>{if(pe.sel==null)return;mut(()=>{const t=pe.teeth[pe.sel];if(t.missing)return;touchT(pe.sel,'ppd');if(pe.type==='precision'){touchSite(pe.sel,pe.site);if(!t.ppd6)t.ppd6=[null,null,null,null,null,null];let cur=t.ppd6[pe.site];let v=(cur==null?(d>0?9:1):cur)+d;t.ppd6[pe.site]=Math.max(1,Math.min(15,v));}else{let v=(t.ppd==null?(d>0?9:1):t.ppd)+d;t.ppd=Math.max(1,Math.min(15,v));}});afterChange(pe.sel);},
   setMob:v=>{if(pe.sel==null)return;mut(()=>{if(!pe.teeth[pe.sel].missing){pe.teeth[pe.sel].mobility=v;touchT(pe.sel,'mob');}});afterChange(pe.sel);},
   togBop:()=>{if(pe.sel==null)return;mut(()=>{const t=pe.teeth[pe.sel];if(t.missing)return;touchT(pe.sel,'bop');if(pe.type==='precision'){if(!t.bop6)t.bop6=[false,false,false,false,false,false];t.bop6[pe.site]=!t.bop6[pe.site];}else{t.bop=!t.bop;if(t.bop)t.pus=false;}});afterChange(pe.sel);},
   togPus:()=>{if(pe.sel==null)return;mut(()=>{const t=pe.teeth[pe.sel];if(t.missing||t.primary)return;touchT(pe.sel,'bop');t.pus=!t.pus;if(t.pus)t.bop=false;});afterChange(pe.sel);},
   togMiss:()=>{if(pe.sel==null)return;mut(()=>{const t=pe.teeth[pe.sel];touchT(pe.sel,'ppd');t.missing=!t.missing;if(t.missing)clearForMissing(t);});afterChange(pe.sel);if(pe.type==='precision')refreshPlaque();},
   revert:()=>{if(pe.sel==null)return;mut(()=>{const b=pe.cmpBase&&pe.cmpBase[pe.sel],t=pe.teeth[pe.sel];if(!b)return;
-      t.ppd=b.ppd;t.ppd6=b.ppd6?b.ppd6.slice():null;t.mobility=b.mobility;t.missing=!!b.missing;t.primary=!!b.primary;if(t.missing)clearForMissing(t);touchT(pe.sel,'ppd');});afterChange(pe.sel);},
+      t.ppd=b.ppd;t.ppd6=b.ppd6?b.ppd6.slice():null;t.mobility=b.mobility;t.missing=!!b.missing;t.primary=!!b.primary;if(t.missing)clearForMissing(t);touchT(pe.sel,'ppd');touchAllSites(pe.sel);});afterChange(pe.sel);},
   // 1本ずつ出血を付ける（精密：直前の歯の部位）
-  togBopAt:(n,i)=>{if(pe.readOnly)return;mut(()=>{const t=pe.teeth[n];if(!t||t.missing)return;if(!t.bop6)t.bop6=[false,false,false,false,false,false];t.bop6[i]=!t.bop6[i];touchT(n,'bop');});afterChange(n);},
+  togBopAt:(n,i)=>{if(pe.readOnly)return;const t0=pe.teeth[n];if(!t0||t0.missing||t0.primary)return;mut(()=>{const t=pe.teeth[n];if(!t||t.missing)return;if(!t.bop6)t.bop6=[false,false,false,false,false,false];t.bop6[i]=!t.bop6[i];touchT(n,'bop');});afterChange(n);},
   // 動揺度が未入力の歯をまとめて0に（未入力と0を書き分けるため、0ははっきり入れる）
   mobRestZero:()=>{if(pe.readOnly)return;const list=ORDER.filter(n=>{const x=pe.teeth[n];return !x.missing&&!x.primary&&x.mobility==null;});if(!list.length)return;
     pushHist();list.forEach(n=>{pe.teeth[n].mobility=0;touchT(n,'mob');});pe.dirty=true;refreshSaveBtn();refreshArch();updateStats();refreshMissBar();renderEditor();toast('動揺度 '+list.length+'歯を0にしました');},
   // 前回値のままの歯を「今回確認した（前回と同じ）」とする
-  confirmCarried:()=>{if(pe.readOnly)return;const list=carriedList();if(!list.length)return;pushHist();list.forEach(n=>touchT(n,'ppd'));pe.dirty=true;refreshSaveBtn();refreshArch();updateStats();renderEditor();toast(list.length+'歯を「前回と同じ（確認済み）」にしました');},
+  confirmCarried:()=>{if(pe.readOnly)return;const list=carriedList();if(!list.length)return;pushHist();list.forEach(n=>{touchT(n,'ppd');touchAllSites(n);});pe.dirty=true;refreshSaveBtn();refreshArch();updateStats();renderEditor();toast(list.length+'歯を「前回と同じ（確認済み）」にしました');},
   plqTog:(n,k)=>{if(pe.readOnly)return;const x=pe.teeth[n];if(!x||x.missing)return;pushHist();if(!Array.isArray(x.plq))x.plq=[false,false,false,false];const i=PLQ.indexOf(k);x.plq[i]=!x.plq[i];
     pe.dirty=true;refreshSaveBtn();refreshPlaque();if(pe.type==='mixed')refreshTooth(n);},
   plqTooth:n=>{if(pe.readOnly)return;const x=pe.teeth[n];if(!x||x.missing)return;
@@ -3432,20 +3734,19 @@ window.APP={
   // 六点法：部位単位で前後移動（VORDER基準・歯の境界を越え、欠損歯はスキップ）
   advanceSite:(dir)=>{ // 部位単位で前後に移動（歯の中は siteOrder の順、歯は VORDER の順。欠損歯は飛ばす）
     let vi=pe.sel==null?(dir>0?0:VORDER.length-1):VORDER.indexOf(pe.sel);let p=pe.sel==null?(dir>0?-1:6):siteOrder(pe.sel).indexOf(pe.site);
-    for(let g=0;g<VORDER.length*6+6;g++){p+=dir;if(p>5){p=0;vi++;}if(p<0){p=5;vi--;}if(vi<0){vi=0;p=0;break;}if(vi>=VORDER.length){vi=VORDER.length-1;p=5;break;}if(!pe.teeth[VORDER[vi]].missing)break;}
+    for(let g=0;g<VORDER.length*6+6;g++){p+=dir;if(p>5){p=0;vi++;}if(p<0){p=5;vi--;}if(vi<0){vi=0;p=0;break;}if(vi>=VORDER.length){vi=VORDER.length-1;p=5;break;}const xv=pe.teeth[VORDER[vi]];if(!xv.missing&&!xv.primary)break;}
     const n=VORDER[vi],old=pe.sel;pe.sel=n;pe.site=siteOrder(n)[p];if(old!=null&&old!==n)refreshTooth(old);refreshTooth(n);renderEditor();
     const el=document.querySelectorAll('.tooth')[ORDER.indexOf(n)];if(el)el.scrollIntoView({inline:'center',block:'nearest',behavior:'smooth'});},
   autoNextSite:()=>{const ord=siteOrder(pe.sel);const p=ord.indexOf(pe.site);if(p<5){pe.site=ord[p+1];renderEditor();return;}
-    const idx=VORDER.indexOf(pe.sel);const rest=VORDER.slice(idx+1).some(n=>!pe.teeth[n].missing);
+    const idx=VORDER.indexOf(pe.sel);const rest=VORDER.slice(idx+1).some(n=>!pe.teeth[n].missing&&!pe.teeth[n].primary);
     if(!rest){finishAll();return;} pe.prevTooth=pe.sel;APP.advanceSite(1);},
   // 検査の印刷は「保存してから印刷」（紙＝原本とアプリの記録を必ず一致させる。文書の印刷と同じ動き）
   printExam:async()=>{const cur=pe;if(!gapConfirm())return;const r=await saveExamCore();if(!r||pe!==cur)return;if(r!=='unchanged')toast(r==='recreated'?'元の検査が見つからないため、新しい検査として保存しました':'保存しました');
     printExam(pe.patient,{teeth:pe.teeth,type:pe.type,date:pe.date,examiner:pe.examiner,carried:carriedList(),createdAt:pe.createdAt,updatedAt:pe.updatedAt,rev:pe.rev,findings:pe.findings});},
   // 音声入力
-  vToggle:()=>{if(vc.active){vStop();return;}if(vc.dict){APP.dictClose();return;}if(useKbdVoice())APP.dictOpen();else vStart();},
-  dictOpen:()=>{if(!pe||pe.readOnly||!hasVoice(pe.type))return;vc.dict=true;dictCommitted='';
-    vc.cursor=(pe.sel!=null&&!vSkip(pe.sel))?pe.sel:(vc.cursor&&!vSkip(vc.cursor))?vc.cursor:(pe.done?null:vFirstFrom(null));
-    if(vc.cursor!=null&&pe.sel!==vc.cursor){pe.sel=vc.cursor;refreshArch();renderEditor();}
+  vToggle:()=>{if(vc.active){vStop();return;}if(vc.dict){APP.dictClose();return;}if(pe&&pe.intro){APP.introDone('voice');return;}if(useKbdVoice())APP.dictOpen();else vStart();},
+  dictOpen:()=>{if(!pe||pe.readOnly||!hasVoice(pe.type))return;if(pe.intro)APP.introDone('');vc.dict=true;dictCommitted='';
+    vSyncStart();
     try{vAudioCtx=vAudioCtx||new (window.AudioContext||window.webkitAudioContext)();if(vAudioCtx.resume)vAudioCtx.resume();}catch(_){}
     const row=document.getElementById('dict-row');if(row)row.style.display='';const el=document.getElementById('v-dict');if(el){el.value='';el.focus();}
     vRefreshPanel();dictStatus();},
@@ -3455,7 +3756,10 @@ window.APP={
   dictCommit:()=>{clearTimeout(dictTimer);dictFlush();},
   dictBlur:()=>{clearTimeout(dictTimer);dictFlush();const el=document.getElementById('v-dict');if(el)el.value='';dictCommitted='';},
   vUseBrowser:()=>{vc.kbd=!useKbdVoice();try{localStorage.setItem('perio_voice_kbd',vc.kbd?'1':'0');}catch(_){}if(vc.dict)APP.dictClose();vRefreshPanel();},
-  vSetMode:m=>{vc.mode=m;if(m==='bop'){vc.bopKind='bop';vc.bopQuad=null;}vRefreshPanel();}, // 出血モードは毎回「出血＋」から（前の「消す」を持ち越さない）
+  vSetMode:m=>{vc.mode=m;if(m==='bop'){vc.bopKind='bop';vc.bopQuad=null;} // 出血モードは毎回「出血＋」から（前の「消す」を持ち越さない）
+    if(m==='mob'&&(vc.cursor==null||pe.done)){vc.cursor=vFirstFrom(null);pe.done=false;}
+    voiceToPad(m);if(!pe.tapMode&&vc.cursor!=null)pe.sel=vc.cursor;refreshArch();renderEditor();refreshMissBar();
+    vRefreshPanel();},
   vOptSound:()=>{vc.sound=!vc.sound;vRefreshPanel();},
   vOptEcho:()=>{vc.echo=!vc.echo;vRefreshPanel();},
   vRunText:()=>{if(pe.readOnly)return;const el=document.getElementById('v-text');if(!el||!el.value.trim())return;if(vc.cursor==null&&!pe.done)vc.cursor=(pe.sel!=null&&!vSkip(pe.sel))?pe.sel:vFirstFrom(null);vHandle(el.value);const el2=document.getElementById('v-text');if(el2){el2.value='';el2.focus();}},
@@ -3713,6 +4017,7 @@ function runSelfTest(){
   {const keep=store.exams;const t=freshTeeth();ORDER.forEach(n=>{t[n].plq=[true,false,false,false];});store.exams=[{id:'pq',patientId:'p002',date:'2026-10-20',type:'precision',teeth:t}];
    const s3=newDocData('s3','p002'),s1=newDocData('s1i','p002');store.exams=keep;ok('v14 PCR 25%（目標20%超）で様式3「磨き残し」・様式1「多い」',s3.state.includes('磨き残しがあります')&&s1.plaque==='多い');}
   {const r=x=>{const o=vInterpret(x,'ppd');return o.bad?'BAD':o.res.cmds.map(c=>c.v).join();};
+   eq('v14.2 方角の後ろのかな・同じ読みの字を歯の番号に（右下さん→右下3）',[vQuadKana('右下さんは4'),vQuadKana('右下サン'),vQuadKana('右下産は4'),vQuadKana('右下しかない')],['右下3は4','右下3','右下3は4','右下しかない']);
    eq('v14.1 キーボードの音声入力の形（同音の字・カタカナ・漢数字）を数字に・1文字の「後」は入れない',[r('3死2'),r('サンサンニ'),r('三三二'),r('死死後'),r('後')],['3,4,2','3,3,2','3,3,2','4,4,5','BAD']);}
   renderSelfTest(T);
   // 端末の保存場所（IndexedDB）に書けて読めるか：本物のデータとは別の一時DBで確かめて消す（iPad の Safari で開いたときの点検用）
