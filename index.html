@@ -1024,7 +1024,10 @@
   var SR = 16000;
   var FRAME = 320;                       // 20ms
   var DEF = {
-    silenceMs: 600,                      // この長さ静かなら1発話の終わり
+    silenceMs: 600,                      // 直前のこの長さのうち quietRatio が静かなら1発話の終わり（2026-10-28：連続でなく割合＝まわりの声で途切れても区切れる）
+    quietRatio: 0.8,
+    relDb: 15,                           // その発話の声のいちばん大きい所よりこれだけ小さければ「静か」（近い院長の声と遠いまわりの声を分ける）
+    softMs: 7000,                        // これを超えても区切れなければ、いちばん静かだった所で分けて送る（まわりの声で区切れないときの保険）
     minSpeechMs: 200,                    // 声の部分がこれより短ければ捨てる（咳・物音）
     maxMs: 15000,                        // これより長く話し続けたら、そこで区切って送る（Mac mini は20秒まで）
     preRollMs: 300,                      // 話し始めの前も少し付ける（最初の音が欠けないように）
@@ -1086,7 +1089,11 @@
     this.o = o; this.onSegment = onSegment;
     this.floor = -60; this.frames = 0; this.speaking = false;
     this.pre = []; this.seg = []; this.hot = 0; this.quiet = 0; this.voiced = 0; this.lastDb = -100;
+    this.dbs = []; this.qr = []; this.peak = -100;
   }
+  // 静かの基準：まわりの雑音から決めた値と、この発話の声のいちばん大きい所−relDb の高い方
+  Vad.prototype.offLevel = function (th) { return Math.max(th.off, this.peak - this.o.relDb); };
+  Vad.prototype.smooth = function (k) { var d = this.dbs, a = Math.max(0, k - 2), s = 0; for (var i = a; i <= k; i++) s += d[i]; return s / (k - a + 1); };
   Vad.prototype.thresholds = function () { var on = Math.max(this.o.minDb, this.floor + this.o.marginDb); return { on: on, off: on - 4 }; };
   Vad.prototype.feed = function (f) {
     var s = 0; for (var i = 0; i < f.length; i++) s += f[i] * f[i];
@@ -1106,14 +1113,19 @@
       if (db < this.floor) this.floor = this.floor * 0.7 + db * 0.3; else this.floor = Math.min(db, this.floor + 0.05);
       if (db > th.on) { this.hot++; } else this.hot = 0;
       if (this.hot >= o.startFrames) {
-        this.speaking = true; this.seg = this.pre.slice(); this.pre = []; this.quiet = 0; this.voiced = this.hot; this.hot = 0; this.dbs = [];
+        this.speaking = true; this.seg = this.pre.slice(); this.pre = []; this.quiet = 0; this.voiced = this.hot; this.hot = 0; this.dbs = []; this.qr = []; this.peak = db;
       }
       return;
     }
     this.seg.push(f);
     this.dbs.push(db);
-    if (db < th.off) this.quiet++; else { this.quiet = 0; this.voiced++; }
-    if (this.quiet * 20 >= o.silenceMs) return this.end(false);
+    var sm = this.smooth(this.dbs.length - 1);
+    if (sm > this.peak) this.peak = sm;
+    var q = db < this.offLevel(th);
+    if (q) this.quiet++; else { this.quiet = 0; this.voiced++; }
+    var win = Math.round(o.silenceMs / 20);
+    this.qr.push(q ? 1 : 0); if (this.qr.length > win) this.qr.shift();
+    if (q && this.qr.length >= win) { var nq = 0; for (var k = 0; k < this.qr.length; k++) nq += this.qr[k]; if (nq >= o.quietRatio * win) return this.end(false); }
     // 吸引・機械の音のような「ずっと同じ大きさの音」が2秒続いたら声ではない：雑音の基準をその大きさに上げて区切る
     if (this.seg.length >= 150 && this.dbs.length >= 100) {
       var last = this.dbs.slice(-100), mx = Math.max.apply(null, last), mn = Math.min.apply(null, last);
@@ -1126,7 +1138,22 @@
         return this.end(false);
       }
     }
+    if (this.seg.length * 20 >= o.softMs && !this.softTried) { this.softTried = true; if (this.softSplit()) return; }
     if (this.seg.length * 20 >= o.maxMs) return this.end(true);
+  };
+  // 区切れないまま長くなった：0.5秒より後で、0.2秒ならしていちばん静かだった所が声より8dB以上小さければ、そこで分けて前を送る
+  Vad.prototype.softSplit = function () {
+    var d = this.dbs, n = d.length, best = -1, bv = 1e9;
+    for (var i = 25; i < n - 15; i++) { var s = 0; for (var j = i; j < i + 10; j++) s += d[j]; s /= 10; if (s < bv) { bv = s; best = i; } }
+    if (best < 0 || bv > this.peak - 8) return false;
+    var cut = best + 5, head = this.seg.slice(0, cut), rest = this.seg.slice(cut), restDb = d.slice(cut);
+    var th = this.thresholds(), off = this.offLevel(th), vh = 0, vr = 0;
+    for (var a = 0; a < cut && a < n; a++) if (d[a] >= off) vh++;
+    for (var b = 0; b < restDb.length; b++) if (restDb[b] >= off) vr++;
+    this.emit(head, vh * 20, 'soft');
+    this.seg = rest; this.dbs = restDb; this.qr = []; this.quiet = 0; this.voiced = vr; this.softTried = false;
+    this.peak = -100; for (var c = 0; c < restDb.length; c++) { var sm = this.smooth(c); if (sm > this.peak) this.peak = sm; }
+    return true;
   };
   // 区切って送る。cut=true は長すぎて途中で切った（話は続いている）
   Vad.prototype.end = function (cut) {
@@ -1135,12 +1162,15 @@
     var voicedMs = this.voiced * 20;
     this.seg = []; this.quiet = 0; this.voiced = 0;
     if (!cut) { this.speaking = false; this.pre = []; this.hot = 0; }
-    this.dbs = [];
-    if (voicedMs < o.minSpeechMs || !seg.length) return;
+    this.dbs = []; this.qr = []; this.softTried = false; if (!cut) this.peak = -100;
+    this.emit(seg, voicedMs, cut);
+  };
+  Vad.prototype.emit = function (seg, voicedMs, cut) {
+    if (voicedMs < this.o.minSpeechMs || !seg.length) return;
     var n = 0; for (var i = 0; i < seg.length; i++) n += seg[i].length;
     var pcm = new Float32Array(n), p = 0;
     for (var j = 0; j < seg.length; j++) { pcm.set(seg[j], p); p += seg[j].length; }
-    this.onSegment(pcm, { voicedMs: voicedMs, cut: cut });
+    this.onSegment(pcm, { voicedMs: voicedMs, cut: cut === true, soft: cut === 'soft' });
   };
   Vad.prototype.flush = function () { if (this.speaking && this.seg.length) { this.quiet = 0; this.end(false); } };
 
@@ -1248,7 +1278,7 @@
       // iPad：音の部品はタップの中で作って動かす（await の後だと止まったままになることがある）
       var AC = global.AudioContext || global.webkitAudioContext;
       try { st.ctx = new AC(); if (st.ctx.resume) st.ctx.resume(); } catch (e) { teardown('error', true); fail(err('unsupported', '録音の準備ができませんでした')); return Promise.resolve(false); }
-      var cons = opts.constraints || { audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } };
+      var cons = opts.constraints || { audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false } };
       return navigator.mediaDevices.getUserMedia(cons).then(function (stream) {
         if (gen !== st.gen || !st.running) { stream.getTracks().forEach(function (t) { t.stop(); }); return false; }
         st.stream = stream;
@@ -1507,9 +1537,10 @@ const store={
 // ★PocketBase導入時：ミニPCでPBを起動し、下の url に院内サーバーのアドレスを入れるだけ。設定例：'http://192.168.1.50:8090'
 //   url='' のあいだは【端末内保存】。LOCAL.on=false でメモリのみに戻せる。
 const PB={url:''};
-const APP_VERSION='0.16.0';const DATA_SCHEMA=1;
+const APP_VERSION='0.16.1';const DATA_SCHEMA=1;
 // 更新内容（新しい順・アプリ内の「更新内容」とホームの「更新しました」に出す）
 const CHANGES=[
+  ['0.16.1','Mac mini の音声：診療室のようにまわりで人が話していても、話の切れ目で区切って聞き取るように（静かな部屋でしか入らなかったのを直した）'],
   ['0.16.0','Mac mini で記録を共有できるように（3台の iPad で同じ記録。バックアップの画面の「🔄 Mac mini で記録を共有」で始める）。音声は院内の Mac mini で聞き取る形に（🎤を1回押せば止めるまで聞く。届かないときはキーボードのマイク）'],
   ['0.15.1','速くした：テンキーを押したときの反応（押すたびに画面全体を計算し直していたのをやめた）・アプリを開くとき（手元に控えた版ですぐ開き、新しい版は裏で取ってくる）'],
   ['0.15.0','検査の画面を作り直し：テンキーは1つ（深さ／動揺度を上で切り替え、押すと次の歯へ）・出血は歯式のマスをタップ・ページをスクロールせずに入力できる。新しい検査は最初に欠損歯の登録（終わったら「🎤 声で入れる」か「テンキーで入れる」）。音声：「BOP」で出血の入力へ・「動揺」で動揺度の入力へ・「動揺は左上7と右下7が1で他はゼロ」「あとは全部0」'],
@@ -2905,7 +2936,7 @@ function vNorm(s){
   s=s.replace(/ミリメートル|ミリ|みり|㎜|ｍｍ|mm/gi,'');
   s=s.replace(/番目|ばんめ|番|ばん/g,'');
   s=s.replace(/えーと|ええと|えっと|あのー|あの|そのー|えー|あー|んー|うーん|まあ/g,'');
-  s=s.replace(/あとは/g,'残りは'); // 「あとは全部0」（次の「と」の除去で「あは」にならないように）
+  s=s.replace(/同様(?=度?は?[、,，\s]*(?:右上|左上|右下|左下|すべて|全て|全部|その他|他|ほか|残り|あと|[0-3]))/g,'動揺').replace(/手鉄|取血|首血/g,'出血').replace(/結損|ケッソン/g,'欠損'); /* Mac mini（Whisper）の聞き違い（2026-10-28）。「同様」は後ろに歯の場所・0〜3が続くときだけ */s=s.replace(/あとは/g,'残りは'); // 「あとは全部0」（次の「と」の除去で「あは」にならないように）
   s=s.replace(/と|、|および|ならびに/g,''); // 連続列挙の接続「と」等を除去（左上7と6と5→左上765）
   s=s.replace(/十五/g,'15').replace(/十四/g,'14').replace(/十三/g,'13').replace(/十二/g,'12').replace(/十一/g,'11').replace(/十/g,'10');
   const KJ={'〇':'0','零':'0','一':'1','二':'2','三':'3','四':'4','五':'5','六':'6','七':'7','八':'8','九':'9'};
@@ -3289,6 +3320,7 @@ function sttProbe(){if(vc.miniOk!=null||typeof createStt!=='function'||typeof lo
 function vMakeMiniEngine(){let want=false;
   const s=createStt({hint:'perio',
     onText:t=>{if(!want||!vc.active)return;vc.heard=t;vc.heardFinal=true;vHandle(t);}, // 止めた後に届いた分は入れない（ブラウザの音声認識と同じ）
+    onResult:res=>{if(want&&res&&!res.text&&res.info&&(res.info.cut||res.info.dropped)){vc.err='まわりの声で区切れませんでした。数字のあとに少し間を空けて話してください（4つくらいずつ）。';vRefreshPanel();}},
     onState:(st)=>{if(st==='speaking'){vc.heard='（聞いています…）';vc.heardFinal=false;vUpdateHeard();}
       else if(st==='stopped'&&want){want=false;vc.active=false;vRefreshPanel();}},
     onError:err=>{if(err&&err.fatal){want=false;vc.active=false;if(err.kind==='net'||err.kind==='unconfigured'||err.kind==='auth')vc.miniOk=false;
