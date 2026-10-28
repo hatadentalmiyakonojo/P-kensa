@@ -1537,9 +1537,10 @@ const store={
 // ★PocketBase導入時：ミニPCでPBを起動し、下の url に院内サーバーのアドレスを入れるだけ。設定例：'http://192.168.1.50:8090'
 //   url='' のあいだは【端末内保存】。LOCAL.on=false でメモリのみに戻せる。
 const PB={url:''};
-const APP_VERSION='0.16.4';const DATA_SCHEMA=1;
+const APP_VERSION='0.16.5';const DATA_SCHEMA=1;
 // 更新内容（新しい順・アプリ内の「更新内容」とホームの「更新しました」に出す）
 const CHANGES=[
+  ['0.16.5','音声：マイクの感度を選べるように（ふつう／やや低い／低い。初めは「低い」＝近くの声だけ拾い、まわりの話し声を拾いにくい）。音声の詳細と声の試験の画面で切り替え'],
   ['0.16.4','音声（院長の声の試験から）：「にい」「用」「Q」「ダーナー」「同様」「はい、の」などの聞き違いを数字・動揺・排膿として読む。「右上7と…」のように途中で区切れた発話は次とつなげて読む。声の試験の画面に今の入力（深さ・出血・動揺度）を出す'],
   ['0.16.3','Mac mini に記録が届いている iPad では、JSONの書き出しの促しを出さないように（Mac mini に1日以上届いていないときだけ知らせる）'],
   ['0.16.2','音声：まわりの数字と一緒に言った「10」「12」が 1 と 0 に分かれない・「C」を4・「さあ」を3・「〜だけ2」「〜だけ動揺が2度」を読む。「🧪 声の試験」（原稿を読んで聞き取りを記録する院長用の画面）'],
@@ -3360,15 +3361,20 @@ function sttProbe(){if(vc.miniOk!=null||typeof createStt!=='function'||typeof lo
 function sttJoiner(fn){let held=null,timer=null;const tailRe=/(?:右上|左上|右下|左下)[、,，\s]*[1-8][、,，\s]*(?:と|度|ど)[。、,，\s]*$/;
   const flush=()=>{clearTimeout(timer);if(held!=null){const h=held;held=null;fn(h);}};
   return {push(t){clearTimeout(timer);if(held!=null){t=held+' '+t;held=null;}if(tailRe.test(t)){held=t;timer=setTimeout(flush,3000);return;}fn(t);},flush,drop(){clearTimeout(timer);held=null;}};}
+// マイクの感度（院長 2026-10-28「集音が良すぎる・もっと小さめでいい」）：低いほど近くの大きな声だけ拾う。既定は「低い」
+const MIC_SENS={normal:{label:'ふつう',minDb:-50,marginDb:10,relDb:15},mid:{label:'やや低い',minDb:-40,marginDb:15,relDb:13},low:{label:'低い',minDb:-32,marginDb:20,relDb:11}};
+function micSens(){let v=null;try{v=localStorage.getItem('perio_mic_sens');}catch(_){}return MIC_SENS[v]?v:'low';}
+function micOpts(){const m=MIC_SENS[micSens()];return {minDb:m.minDb,marginDb:m.marginDb,relDb:m.relDb,minSpeechMs:120};} // 「に」「じゅう」は大きい音の部分が0.2秒に満たない（咳・物音は Mac mini が文字にしても数字でなければ入れない）
+function micSensHTML(fn){const cur=micSens();return '<span style="font-size:.78rem;color:var(--soft)">マイクの感度：</span>'+Object.keys(MIC_SENS).map(k=>`<button class="tog" style="padding:7px 12px;font-size:.78rem;${cur===k?'background:var(--blue);border-color:var(--blue);color:#fff':''}" onclick="APP.${fn}('${k}')">${MIC_SENS[k].label}</button>`).join('');}
 function vMakeMiniEngine(){let want=false;const join=sttJoiner(t=>{if(want&&vc.active){vc.heard=t;vc.heardFinal=true;vHandle(t);}});
-  const s=createStt({hint:'perio',
+  const s=createStt(Object.assign({hint:'perio'},micOpts(),{
     onText:t=>{if(!want||!vc.active)return;join.push(t);}, // 止めた後に届いた分は入れない（ブラウザの音声認識と同じ）
     onResult:res=>{if(want&&res&&!res.text&&res.info&&(res.info.cut||res.info.dropped)){vc.err='まわりの声で区切れませんでした。数字のあとに少し間を空けて話してください（4つくらいずつ）。';vRefreshPanel();}},
     onState:(st)=>{if(st==='speaking'){vc.heard='（聞いています…）';vc.heardFinal=false;vUpdateHeard();}
       else if(st==='stopped'&&want){want=false;vc.active=false;vRefreshPanel();}},
     onError:err=>{if(err&&err.fatal){want=false;vc.active=false;if(err.kind==='net'||err.kind==='unconfigured'||err.kind==='auth')vc.miniOk=false;
         vc.err='Mac mini の聞き取り：'+(err.message||err.kind)+'。'+(vc.miniOk===false?'もう一度「🎤 音声入力」を押すと、キーボードのマイクで話せます。':'');}
-      else vc.err='Mac mini の聞き取り：'+((err&&err.message)||'');vRefreshPanel();}});
+      else vc.err='Mac mini の聞き取り：'+((err&&err.message)||'');vRefreshPanel();}}));
   return {kind:'mini',start(){want=true;vc.err='';join.drop();s.start();},stop(){want=false;join.drop();try{s.abort();}catch(_){}}};}
 // キーボードのマイク（音声入力）を使うか：ホーム画面のアイコンやブラウザの音声認識が無いときは既定でこちら。パネルで切り替えられる
 function useKbdVoice(){if(vc.kbd!=null)return vc.kbd;let v=null;try{v=localStorage.getItem('perio_voice_kbd');}catch(_){}if(v==='1'||v==='0'){vc.kbd=v==='1';return vc.kbd;}return !vc.avail||isStandalone();}
@@ -3418,6 +3424,7 @@ function vPanelHTML(){
       <span>聞き取り方：</span>${(()=>{const e=voiceEngine();const b=(k,l,ok)=>ok?`<button class="tog" style="padding:7px 12px;font-size:.78rem;${e===k?'background:var(--blue);border-color:var(--blue);color:#fff':''}" onclick="APP.vUseEngine('${k}')">${l}</button>`:'';
         return b('mini','院内の Mac mini',typeof createStt==='function')+b('kbd','キーボードのマイク',true)+b('browser','ブラウザの音声認識',vc.avail);})()}
     </div>
+    <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">${micSensHTML('vMicSens')}</div>
     <div style="margin-top:8px"><button class="tog" style="padding:7px 12px;font-size:.78rem" onclick="APP.go({name:'vtest'})">🧪 声の試験（原稿を読んで記録・院長用）</button></div>
     <div style="margin-top:6px;font-size:.72rem;color:var(--soft)">${vc.miniOk===true?'Mac mini：つながっています。🎤を1回押せば、止めるまで聞き続けます。':vc.miniOk===false?'Mac mini：つながりません'+(vc.miniMsg?'（'+esc(vc.miniMsg)+'）':'')+'。キーボードのマイクで話せます。':'Mac mini：確かめています…'}</div>
     ${vc.err?`<details style="margin-top:6px;font-size:.66rem;color:var(--soft)"><summary>診断の情報（院長向け）</summary>認識API=${window.SpeechRecognition?'標準':window.webkitSpeechRecognition?'webkit':'なし'} / 通信=${navigator.onLine?'オン':'オフ'} / ${isStandalone()?'ホーム画面アプリ':'ブラウザ'} / ${esc((navigator.userAgent.match(/(iPhone|iPad|Macintosh)[^)]*/)||['?'])[0])}</details>`:''}
@@ -3460,6 +3467,7 @@ function renderVtest(){if(!VT.items.length)vtReset();const it=VT.items[VT.i],n=V
           <button class="nb" style="min-height:54px;padding:10px 18px" onclick="APP.vtRedo()">やり直す</button>
           <button class="btn-primary" style="width:auto;min-height:54px;padding:10px 26px;background:#0f766e" onclick="APP.vtMove(1)">次へ →</button>
         </div>
+        <div style="margin-top:12px;display:flex;gap:6px;align-items:center;justify-content:center;flex-wrap:wrap">${micSensHTML('vtMicSens')}</div>
         <div id="vt-now" style="margin-top:16px;text-align:left">${vtNowHTML()}</div>
         ${VT.err?`<div style="margin-top:10px;color:var(--bad);font-weight:700">${esc(VT.err)}</div>`:''}
         <p style="font-size:.76rem;color:var(--soft);margin:14px 0 0">🎤を1回押したら、止めずに続けて読めます。1つ読んで文字が出たら「次へ」。うまく区切れなかったら「やり直す」。記録はこの画面の中だけで、最後に「結果を保存」を押すまでどこにも残りません。</p>
@@ -4425,13 +4433,15 @@ window.APP={
     if(await rsApply(x.key,x.mine)){}RS.out[x.key]={v:x.mine,base:RS.st.vers[x.key]||0,wid:rsWid()};RS.conf.splice(i,1);await rsSave();rsSync();render();},
   rsDropConf:async i=>{if(!RS.conf[i]||!confirm('この控えを消します（今の記録は変わりません）。よろしいですか？'))return;RS.conf.splice(i,1);await rsSave();render();},
   vtToggle:()=>{if(VT.on){vtStop();renderVtest();return;}if(typeof createStt!=='function')return;
-    VT.err='';VT.join=sttJoiner(t=>APP.vtGot(t));VT.stt=createStt({hint:'perio',
+    VT.err='';VT.join=sttJoiner(t=>APP.vtGot(t));VT.stt=createStt({hint:'perio',minDb:micOpts().minDb,marginDb:micOpts().marginDb,relDb:micOpts().relDb,minSpeechMs:micOpts().minSpeechMs,
       onText:(t,info)=>{VT.join.push(t);},
       onResult:res=>{if(res&&!res.text&&res.info&&(res.info.cut||res.info.dropped)){const it=VT.items[VT.i];if(it)it.heard.push({text:'（文字にならず：'+(res.info.dropped||'15秒で切れた')+'）',judge:'✗',cut:!!res.info.cut});renderVtest();}},
       onError:e=>{VT.err='Mac mini の聞き取り：'+((e&&e.message)||(e&&e.kind)||'');if(e&&e.fatal)vtStop();renderVtest();}});
     VT.on=true;try{VT.stt.start();}catch(e){VT.on=false;VT.err=String(e&&e.message||e);}renderVtest();},
   vtGot:t=>{const it=VT.items[VT.i];if(!it)return;const mode=it.mode||VT.mode;it.heard.push({text:t,judge:vtJudge(t,mode),cut:false,soft:false});
     try{const r=vInterpret(t,mode);if(r&&r.res&&!r.bad)r.res.cmds.forEach(c=>{if(c.t==='mode')VT.mode=c.m;if(c.t==='bopEnter')VT.mode='bop';});}catch(_){}renderVtest();},
+  vMicSens:k=>{try{localStorage.setItem('perio_mic_sens',k);}catch(_){}if(vc.active)vStop();vc.engine=null;vRefreshPanel();toast('マイクの感度：'+MIC_SENS[k].label);},
+  vtMicSens:k=>{try{localStorage.setItem('perio_mic_sens',k);}catch(_){}const was=VT.on;vtStop();renderVtest();if(was)toast('感度を変えました。もう一度「🎤 聞き取りを始める」を押してください');},
   vtMove:d=>{VT.i=Math.max(0,Math.min(VT.items.length-1,VT.i+d));renderVtest();},
   vtRedo:()=>{const it=VT.items[VT.i];if(it)it.heard=[];renderVtest();},
   vtSave:async()=>{const r=await saveFile('声の試験_'+ymdToday()+'.txt',vtText(),'text/plain');toast(r==='shared'||r==='downloaded'?'保存しました（AirDrop で院長の Mac へ送ってください）':r==='aborted'?'やめました':'保存できませんでした');},
