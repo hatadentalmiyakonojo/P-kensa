@@ -1537,9 +1537,10 @@ const store={
 // ★PocketBase導入時：ミニPCでPBを起動し、下の url に院内サーバーのアドレスを入れるだけ。設定例：'http://192.168.1.50:8090'
 //   url='' のあいだは【端末内保存】。LOCAL.on=false でメモリのみに戻せる。
 const PB={url:''};
-const APP_VERSION='0.16.2';const DATA_SCHEMA=1;
+const APP_VERSION='0.16.3';const DATA_SCHEMA=1;
 // 更新内容（新しい順・アプリ内の「更新内容」とホームの「更新しました」に出す）
 const CHANGES=[
+  ['0.16.3','Mac mini に記録が届いている iPad では、JSONの書き出しの促しを出さないように（Mac mini に1日以上届いていないときだけ知らせる）'],
   ['0.16.2','音声：まわりの数字と一緒に言った「10」「12」が 1 と 0 に分かれない・「C」を4・「さあ」を3・「〜だけ2」「〜だけ動揺が2度」を読む。「🧪 声の試験」（原稿を読んで聞き取りを記録する院長用の画面）'],
   ['0.16.1','Mac mini の音声：診療室のようにまわりで人が話していても、話の切れ目で区切って聞き取るように（静かな部屋でしか入らなかったのを直した）'],
   ['0.16.0','Mac mini で記録を共有できるように（3台の iPad で同じ記録。バックアップの画面の「🔄 Mac mini で記録を共有」で始める）。音声は院内の Mac mini で聞き取る形に（🎤を1回押せば止めるまで聞く。届かないときはキーボードのマイク）'],
@@ -1926,6 +1927,11 @@ function initVault(){vault=createVault({app:'perio',label:'歯周検査',appVers
     return {ok:true,message:`患者 ${store.patients.length}名・検査 ${store.exams.length}件・文書 ${store.docs.length}件を復元しました。まもなく患者一覧に戻ります。`};
   }});}
 function mountVaultBadge(){try{vault.mountBadge(document.getElementById('vault-badge'));}catch(_){}}
+// 届いた・届かなくなったでホームの促しを出し直す（入力中は描き直さない）
+let vaultCoverOk=null;
+function watchVaultCover(){try{vault.onStatus(()=>{const vc=vaultCover(store.exams.filter(e=>!SAMPLE_EIDS.has(e.id)&&!SAMPLE_PIDS.has(e.patientId)));const ok=!!(vc&&vc.ok);
+  if(ok===vaultCoverOk)return;const first=vaultCoverOk===null;vaultCoverOk=ok;if(first||route.name!=='home')return;
+  const a=document.activeElement;if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))return;render();});}catch(_){}}
 
 // ───────── 使い方（重ねて開く画面） ─────────
 const HELP=[
@@ -1965,7 +1971,8 @@ const HELP=[
   <p class="hp">新しい検査は、欠損歯の登録のあと「🎤 声で入れる」を押すと、そのまま上の欄にキーボードが出ます。キーボードの🎤を押せば話せます。途中からは「🎤 音声入力」でも同じ欄が開きます。iPadのホーム画面のアイコンから開いたときは、「🎤 音声入力」を押すと上に欄が開きます。キーボードの🎤を押して話すと、話し終えて約1秒で入ります（「入力」を押さなくてよい）。キーボードの音声入力が「死」「後」のように同じ読みの字で返しても、数字として読みます。</p>`],
  ['save','保存・紙・文書',`<p class="hp">保存した検査は<b>見るだけ</b>で開きます（うっかり書き換えないため）。直すときは「✏️ 編集する」。直して保存すると紙に「第2版」と出ます。</p>
   <p class="hp">患者ページの「📄 治療のお知らせ」（様式1）・「🪥 口腔衛生管理」（様式3）は、直近の検査から自動で入ります。<b>空欄の項目</b>は検査で測っていないので、確かめて入れてください。印刷するとお渡し用＋控が出ます。</p>`],
- ['backup','バックアップ（大切）',`<p class="hp">記録はこのiPadの中だけにあります。<b>毎日（少なくとも週に1回）</b>「💾 バックアップ・データ管理」→「JSONで書き出す」をしてください。保存先は「<b>このiPad内</b>」を選び、院長のMacへは AirDrop で渡します（iCloud Drive は選ばない）。</p>
+ ['backup','バックアップ（大切）',`<p class="hp">Mac mini の院内保管庫を設定した iPad は、保存するたびに Mac mini へ自動で控えが送られます（画面の上に「🖥 保管 時刻」）。この iPad では JSON の書き出しはふだん要りません。Mac mini に1日以上届かないとホームに知らせが出ます。</p>
+  <p class="hp">院内保管庫を設定していない iPad は、<b>毎日（少なくとも週に1回）</b>「💾 バックアップ・データ管理」→「JSONで書き出す」をしてください。保存先は「<b>このiPad内</b>」を選び、院長のMacへは AirDrop で渡します（iCloud Drive は選ばない）。</p>
   <p class="hp">同じ人を2回登録してしまったら、患者情報の編集の「🔀 重なって登録した患者をまとめる」で1人にできます（直前の状態に戻せます）。</p>
   <p class="hp">「バックアップから復元」は今のデータを<b>すべて置き換え</b>ます。置き換える前のデータは端末内に1つ控え、「直前の復元を取り消す」で戻せます。</p>`],
  ['trouble','困ったとき',`<table class="ht"><tr><th>こんなとき</th><th>すること</th></tr>
@@ -2025,9 +2032,20 @@ function changedHTML(){let seen=null;try{seen=localStorage.getItem('perio_seen_v
   return `<div class="banner" style="margin-top:14px;background:#eff6ff;border-color:#93c5fd;color:#1e3a8a"><div style="font-weight:700">🔄 v${APP_VERSION} に更新しました</div>
     ${news.map(c=>`<div style="font-size:.8rem;margin-top:4px">・v${c[0]}：${esc(c[1])}</div>`).join('')}
     <div style="margin-top:8px"><button class="nb" onclick="APP.seenVersion()">閉じる</button></div></div>`;}
-// JSONを最後に書き出してから日が経っていたら促す（iPadの故障・紛失・初期化に備える。Mac mini の保管庫が動いていても院外の控えとして）
+// Mac mini（院内保管庫）に今の記録が届いているか。保管庫を設定していない・一度も届いていない端末は null（JSONの促しのまま）
+//   ok＝届いた後に変わった検査が無い、または最後に届いてから1日たっていない（まもなく送る）
+const VAULT_STALE_MS=86400000;
+function vaultCover(real){try{if(!vault)return null;const s=vault.status();if(s.state==='off'||!s.lastOkAt)return null;
+  const at=new Date(s.lastOkAt).toISOString();const since=real.filter(e=>(e.updatedAt||e.createdAt||'')>at).length;const age=Date.now()-s.lastOkAt;
+  return {ok:since===0||age<VAULT_STALE_MS,days:Math.floor(age/86400000),since};}catch(_){return null;}}
+// 促し：Mac mini に届いている端末は出さない（院長 2026-10-28）。届かない日が続けば Mac mini を確かめる案内、保管庫の無い端末は JSON の書き出し
 function backupReminderHTML(){if(netState!=='local'||!hasRealData())return '';
-  const real=store.exams.filter(e=>!SAMPLE_EIDS.has(e.id)&&!SAMPLE_PIDS.has(e.patientId));const since=lastExport?real.filter(e=>(e.updatedAt||e.createdAt||'')>lastExport.at).length:real.length;
+  const real=store.exams.filter(e=>!SAMPLE_EIDS.has(e.id)&&!SAMPLE_PIDS.has(e.patientId));
+  const vc=vaultCover(real);if(vc&&vc.ok)return '';
+  if(vc){const r=vc.days>=7;return `<div class="banner" style="margin-top:14px;background:${r?'#fee2e2':'#fef3c7'};border-color:${r?'#fca5a5':'#fcd34d'};color:${r?'#991b1b':'#92400e'}">
+    🖥 Mac mini に <b>${vc.days}日</b> 記録が届いていません（その後の検査 <b>${vc.since}件</b>）。院内Wi-Fi と Mac mini の電源を確かめてください。直らないときは JSON を書き出してください。
+    <button class="tbtn" onclick="APP.go({name:'backup'})">バックアップの画面へ</button></div>`;}
+  const since=lastExport?real.filter(e=>(e.updatedAt||e.createdAt||'')>lastExport.at).length:real.length;
   const days=lastExport?Math.floor((Date.now()-new Date(lastExport.at))/86400000):null;
   const red=(days==null&&since>=20)||(days!=null&&days>=30&&since>0);const show=red||(days==null&&since>=1)||(days!=null&&days>=7&&since>0);if(!show)return '';
   return `<div class="banner" style="margin-top:14px;background:${red?'#fee2e2':'#fef3c7'};border-color:${red?'#fca5a5':'#fcd34d'};color:${red?'#991b1b':'#92400e'}">
@@ -2088,7 +2106,7 @@ function renderHome(){
         <button class="linkbtn" style="display:inline-flex;align-items:center;gap:5px" onclick="APP.help()">❓ 使い方</button>
       </div>
       <div id="plist">${patientListHTML()}</div>
-      <p class="note">${netState==='local'?'データはこの端末（このURL）内に自動保存されます。定期的にJSONバックアップを取ってください。':'※ データは保存されません（メモリのみ）。'}${netState==='local'&&storageLevel()!=null?`　保存容量 ${Math.max(1,Math.round(storageLevel()*100))}% 使用`:''}</p>
+      <p class="note">${netState==='local'?(vaultCover([])?'データはこの端末（このURL）内に自動保存され、Mac mini にも自動で控えを送っています。':'データはこの端末（このURL）内に自動保存されます。定期的にJSONバックアップを取ってください。'):'※ データは保存されません（メモリのみ）。'}${netState==='local'&&storageLevel()!=null?`　保存容量 ${Math.max(1,Math.round(storageLevel()*100))}% 使用`:''}</p>
       <p class="note" style="padding-top:4px">歯周検査アプリ v${APP_VERSION}　<button class="linkbtn" style="font-size:.74rem" onclick="APP.help('ver')">更新内容</button></p>
     </div>`;
   mountVaultBadge();
@@ -4735,7 +4753,7 @@ window.addEventListener('pagehide',flushDraftsNow);
   try{await db.load();}
   catch(e){console.error(e);netState='memory';LOCAL.backend=null;store.patients=[];store.exams=[];store.docs=[];
     storageProblem='起動時に保存データを読み込めませんでした（'+String(e&&e.message||e).slice(0,100)+'）。記録は消えていません。入力は保存されないので、アプリを閉じて開き直してください。直らないときは院長に連絡してください。';}
-  try{if(netState==='local')initVault();}catch(e){console.warn('院内保管庫の初期化に失敗',e);} // 端末内保存モードのときだけ
+  try{if(netState==='local'){initVault();watchVaultCover();}}catch(e){console.warn('院内保管庫の初期化に失敗',e);} // 端末内保存モードのときだけ
   try{drafts=await draftReadAll();}catch(_){}
   try{roster=await kvGet('chartDict');if(roster&&!Array.isArray(roster.items))roster=null;}catch(_){roster=null;}
   try{preRestoreInfo=await kvGet('pre_restore_info');
