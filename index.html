@@ -1537,9 +1537,10 @@ const store={
 // ★PocketBase導入時：ミニPCでPBを起動し、下の url に院内サーバーのアドレスを入れるだけ。設定例：'http://192.168.1.50:8090'
 //   url='' のあいだは【端末内保存】。LOCAL.on=false でメモリのみに戻せる。
 const PB={url:''};
-const APP_VERSION='0.16.1';const DATA_SCHEMA=1;
+const APP_VERSION='0.16.2';const DATA_SCHEMA=1;
 // 更新内容（新しい順・アプリ内の「更新内容」とホームの「更新しました」に出す）
 const CHANGES=[
+  ['0.16.2','音声：まわりの数字と一緒に言った「10」「12」が 1 と 0 に分かれない・「C」を4・「さあ」を3・「〜だけ2」「〜だけ動揺が2度」を読む。「🧪 声の試験」（原稿を読んで聞き取りを記録する院長用の画面）'],
   ['0.16.1','Mac mini の音声：診療室のようにまわりで人が話していても、話の切れ目で区切って聞き取るように（静かな部屋でしか入らなかったのを直した）'],
   ['0.16.0','Mac mini で記録を共有できるように（3台の iPad で同じ記録。バックアップの画面の「🔄 Mac mini で記録を共有」で始める）。音声は院内の Mac mini で聞き取る形に（🎤を1回押せば止めるまで聞く。届かないときはキーボードのマイク）'],
   ['0.15.1','速くした：テンキーを押したときの反応（押すたびに画面全体を計算し直していたのをやめた）・アプリを開くとき（手元に控えた版ですぐ開き、新しい版は裏で取ってくる）'],
@@ -2052,7 +2053,7 @@ function startPrint(html,title,pageCss){clearPrint();document.getElementById('pg
   document.getElementById('print-area').innerHTML=html;printTitle=document.title;document.title=title;window.print();}
 window.addEventListener('afterprint',()=>{if(printTitle!=null){document.title=printTitle;printTitle=null;}});
 function toast(msg){const warn=/^⚠/.test(msg);const t=document.getElementById('toast');t.innerHTML='<div class="toast"'+(warn?' style="background:#b45309"':'')+'>'+(warn?'':'✅ ')+esc(msg)+'</div>';setTimeout(()=>{t.innerHTML='';},warn?2800:1500);}
-function render(){renderTopBars();if(!(route&&route.name==='patientForm'))RS.edit={}; /* 画面を移ったら「直し始めた版」を捨てる（編集の画面は開くときにまた覚える） */
+function render(){renderTopBars();if(route&&route.name!=='vtest'&&VT.on)vtStop();if(!(route&&route.name==='patientForm'))RS.edit={}; /* 画面を移ったら「直し始めた版」を捨てる（編集の画面は開くときにまた覚える） */
   if(route.name==='patientForm')return renderPatientForm(route.patientId);
   if(route.name==='patientDetail')return renderPatientDetail(route.patientId);
   if(route.name==='perio')return renderPerio(route.patientId,route.examId,route.type);
@@ -2061,6 +2062,7 @@ function render(){renderTopBars();if(!(route&&route.name==='patientForm'))RS.edi
   if(route.name==='import')return renderImport();
   if(route.name==='staff')return renderStaff();
   if(route.name==='backup')return renderBackup();
+  if(route.name==='vtest')return renderVtest();
   return renderHome();
 }
 
@@ -2274,6 +2276,7 @@ function renderBackup(){
         <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="nb" style="font-weight:700" onclick="APP.rosterOpen()">📖 名簿を読み込む（置き換え）</button>${roster?'<button class="nb danger" onclick="APP.rosterClear()">名簿を消す</button>':''}<button class="nb" onclick="APP.openImport()">📥 CSVの患者を患者一覧にまとめて登録（従来）</button></div>
       </div>
       ${rsCardHTML()}
+      <button class="nb" style="width:100%;margin-top:14px" onclick="APP.go({name:'vtest'})">🧪 声の試験（Mac mini の聞き取りを原稿で試して記録する・院長用）</button>
       <div id="vault-mount"></div>
       <button class="linkbtn danger" style="display:block;margin:26px auto 0" onclick="APP.bkWipe()">🗑 全データ初期化（すべて消してまっさらにする）</button>
       <p class="note">見本の患者だけを消すときは、ホームの「🧹 見本の患者を消す」を使ってください。</p>
@@ -2936,7 +2939,7 @@ function vNorm(s){
   s=s.replace(/ミリメートル|ミリ|みり|㎜|ｍｍ|mm/gi,'');
   s=s.replace(/番目|ばんめ|番|ばん/g,'');
   s=s.replace(/えーと|ええと|えっと|あのー|あの|そのー|えー|あー|んー|うーん|まあ/g,'');
-  s=s.replace(/同様(?=度?は?[、,，\s]*(?:右上|左上|右下|左下|すべて|全て|全部|その他|他|ほか|残り|あと|[0-3]))/g,'動揺').replace(/手鉄|取血|首血/g,'出血').replace(/結損|ケッソン/g,'欠損'); /* Mac mini（Whisper）の聞き違い（2026-10-28）。「同様」は後ろに歯の場所・0〜3が続くときだけ */s=s.replace(/あとは/g,'残りは'); // 「あとは全部0」（次の「と」の除去で「あは」にならないように）
+  s=s.replace(/同様(?=度?(?:は|が)?[、,，\s]*(?:右上|左上|右下|左下|すべて|全て|全部|その他|他|ほか|残り|あと|[0-3]))/g,'動揺').replace(/手鉄|取血|首血/g,'出血').replace(/結損|ケッソン/g,'欠損'); /* Mac mini（Whisper）の聞き違い（2026-10-28）。「同様」は後ろに歯の場所・0〜3が続くときだけ */s=s.replace(/あとは/g,'残りは'); // 「あとは全部0」（次の「と」の除去で「あは」にならないように）
   s=s.replace(/と|、|および|ならびに/g,''); // 連続列挙の接続「と」等を除去（左上7と6と5→左上765）
   s=s.replace(/十五/g,'15').replace(/十四/g,'14').replace(/十三/g,'13').replace(/十二/g,'12').replace(/十一/g,'11').replace(/十/g,'10');
   const KJ={'〇':'0','零':'0','一':'1','二':'2','三':'3','四':'4','五':'5','六':'6','七':'7','八':'8','九':'9'};
@@ -2988,6 +2991,7 @@ function vParse(s,mode){
     [/^次(?:へ)?/,()=>({t:'step',d:1})],
     [/^(?:戻る|前へ|前)/,()=>({t:'step',d:-1})],
     [/^([0-9])/,m=>({t:'digit',v:+m[1]})],
+    [/^([\uE00A-\uE00F])/,m=>({t:'digit',v:m[1].charCodeAt(0)-0xE000})], // 区切られた 10〜15（vWhisperWords）
   ];
   let i=0;
   while(i<s.length){const sub=s.slice(i);let hit=false;
@@ -3174,12 +3178,18 @@ function vQuadKana(s){let out='',i=0,m;const re=/(右上|左上|右下|左下)/g
       const hm=V_HOMO.find(([w,d])=>d>=1&&d<=8&&h.startsWith(w,j));if(hm){num+=hm[1];j+=hm[0].length;continue;}break;}
     // 番号の後ろが「は・が・から・まで・欠損・出血…」など続きの言葉か、何もないときだけ（「右下しか」のような言葉は変えない）
     const tail=rest.slice(j);
-    if(num&&(!tail||/^(?:は|が|から|迄|欠損|出血|排膿|なし|へ|[0-9]|右上|左上|右下|左下|と|、)/.test(tail))){out+=num;i=st+j;re.lastIndex=i;}}
+    if(num&&(!tail||/^(?:は|が|から|迄|欠損|出血|排膿|なし|へ|[0-9]|右上|左上|右下|左下|と|、|だけ|動揺|同様)/.test(tail))){out+=num;i=st+j;re.lastIndex=i;}}
   return out+s.slice(i);}
 // 歯番のすぐ後ろ：Whisper は「右上4は5」を「右上4歯後」のように返す（は→歯・数字→同じ読みの字）。歯番＋「歯」は「は」、その後ろが数字1つ分の字だけなら数字に
 // 言葉を削る前（vNorm の前）の文で見る：「右上4は後で」（あとで）を5にしない
 function vQuadTail(s){s=s.replace(/((?:右上|左上|右下|左下)[、,\s]*[1-8]+)歯/g,'$1は');
   return s.replace(/((?:右上|左上|右下|左下)[、,\s]*[1-8]+は)([^0-9、。\s]{1,3})[。．.！!]*$/,(m,a,b)=>{const h=V_HOMO.find(([w])=>w===b);if(h)return a+h[1];const r=vKanaRun(b);return r!=null&&/^(?:1[0-5]|[0-9])$/.test(r)?a+r:m;});}
+// Mac mini（Whisper）が返す1語の読み替え（2026-10-28 院長の実機）：区切られた1語の「C」「シー」＝4・「さあ」「さー」＝3。
+// 「3、10、2」のように区切られた 10〜15 は1つの値（後で文字の区切りを消しても 1 と 0 に分かれないよう、しるしの字 U+E00A〜E00F にする）
+function vWhisperWords(p,mode){const B='(^|[\\s、,，。.])',E='(?=$|[\\s、,，。.])';
+  p=p.replace(new RegExp(B+'(?:[CcＣｃ]|シー|しー)'+E,'g'),'$14').replace(new RegExp(B+'(?:さあ|さー|さぁ|サー|サア)'+E,'g'),'$13');
+  if(mode!=='mob'&&/[\s、,，]/.test(p))p=p.replace(new RegExp(B+'(1[0-5])'+E,'g'),(m,a,b)=>a+String.fromCharCode(0xE000+ +b));
+  return p;}
 function vKanaRun(s){ // 全部が数字（かな含む）なら算用数字の並びを返す。そうでなければ null
   const J={'じゅう':'10','じゅういち':'11','じゅうに':'12','じゅうさん':'13','じゅうよん':'14','じゅうご':'15'};if(J[s])return J[s];
   let out='',i=0,conv=false,homoN=0;
@@ -3200,7 +3210,11 @@ function vInterpret(raw,mode){
   if(new RegExp('(?:は|が)\\s*\\d\\s*[、,。]?\\s*'+FL+'\\s*[、,。]?\\s*\\d').test(pre)||/\d\s*[、,。]?\s*(?:あー*|おっと)\s*[、,。]?\s*\d/.test(pre))
     return{s:pre,res:null,bad:'（言い直しのように聞こえたため入力しませんでした。もう一度どうぞ）'};
   const sep=/\d[\s、,，。.・]+\d/.test(pre); // 「1 2」「1、2」＝区切りのある数字（12mm にまとめない）
-  let s=vQuadKana(vNorm(vQuadTail(pre)));
+  let s=vQuadKana(vNorm(vQuadTail(vWhisperWords(pre,mode))));
+  s=s.replace(/(は|が|迄|から)([\uE00A-\uE00F])/g,(m,a,c)=>a+(c.charCodeAt(0)-0xE000)); // 「右上4は、12」の12は値のまま
+  s=s.replace(/([0-9])度/g,'$1'); // 「2度」（動揺度の値）
+  s=s.replace(/^((?:(?:右上|左上|右下|左下)[1-8]+)+)(?:だけ)?動揺度?(?:が|は)(?=[0-3])/,'動揺$1が'); // 「右上1と左上1だけ動揺が2」
+  s=s.replace(/((?:右上|左上|右下|左下)[1-8]+)だけ(?:が|は)?(?=[0-9\uE00A-\uE00F])/g,'$1が'); // 「右上7と右下7だけ2」＝言った歯だけ（ほかの歯は変えない）
   s=s.replace(/(右上|左上|右下|左下)([1-8])へ/g,'$1$2').replace(/(出血|排膿|深さ|ポケット|動揺度?)モード/g,'$1'); // 「右上5へ」「出血モード」は正式な言い方
   s=s.replace(/(右上|左上|右下|左下)([1-8])(?:は|が)欠損/g,'$1$2欠損'); // 「右下6は欠損」
   s=s.replace(/^(動揺度?|深さ|ポケット)は(?=右上|左上|右下|左下|すべて|全て|全部|その他|他|ほか|残り|あと)/,'$1'); // 「動揺は左上7…」
@@ -3375,12 +3389,64 @@ function vPanelHTML(){
       <span>聞き取り方：</span>${(()=>{const e=voiceEngine();const b=(k,l,ok)=>ok?`<button class="tog" style="padding:7px 12px;font-size:.78rem;${e===k?'background:var(--blue);border-color:var(--blue);color:#fff':''}" onclick="APP.vUseEngine('${k}')">${l}</button>`:'';
         return b('mini','院内の Mac mini',typeof createStt==='function')+b('kbd','キーボードのマイク',true)+b('browser','ブラウザの音声認識',vc.avail);})()}
     </div>
+    <div style="margin-top:8px"><button class="tog" style="padding:7px 12px;font-size:.78rem" onclick="APP.go({name:'vtest'})">🧪 声の試験（原稿を読んで記録・院長用）</button></div>
     <div style="margin-top:6px;font-size:.72rem;color:var(--soft)">${vc.miniOk===true?'Mac mini：つながっています。🎤を1回押せば、止めるまで聞き続けます。':vc.miniOk===false?'Mac mini：つながりません'+(vc.miniMsg?'（'+esc(vc.miniMsg)+'）':'')+'。キーボードのマイクで話せます。':'Mac mini：確かめています…'}</div>
     ${vc.err?`<details style="margin-top:6px;font-size:.66rem;color:var(--soft)"><summary>診断の情報（院長向け）</summary>認識API=${window.SpeechRecognition?'標準':window.webkitSpeechRecognition?'webkit':'なし'} / 通信=${navigator.onLine?'オン':'オフ'} / ${isStandalone()?'ホーム画面アプリ':'ブラウザ'} / ${esc((navigator.userAgent.match(/(iPhone|iPad|Macintosh)[^)]*/)||['?'])[0])}</details>`:''}
     ${vc.log.length?`<div style="margin-top:10px;font-size:.7rem;color:var(--soft);border-top:1px solid var(--line2);padding-top:8px">
       ${vc.log.map(l=>`<div style="display:flex;gap:8px;padding:2px 0"><span style="color:var(--faint);flex:0 0 45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">「${esc(l.raw)}」</span><span style="${l.rej?'color:var(--warn)':''}">→ ${esc(l.note)}</span></div>`).join('')}
     </div>`:''}`;
 }
+// ───────── 声の試験（院長用・2026-10-28）：原稿を1つずつ読み、Mac mini が聞き取った文字とアプリの読み方を記録して書き出す ─────────
+// 記録はこの画面を開いている間だけ（ふだんの検査では聞き取った文字を残さない）。患者さんの情報は入らない（原稿を読むだけ）。端末にも保存しない
+const VT_SCRIPT=[
+  ['いち','1'],['に','2'],['さん','3'],['よん','4'],['ご','5'],['ろく','6'],['なな','7'],['はち','8'],['きゅう','9'],
+  ['じゅう','10'],['じゅういち','11'],['じゅうに','12'],
+  ['さん さん に','3,3,2'],['よん よん さん に','4,4,3,2'],['に に さん さん','2,2,3,3'],['さん じゅう に','3,10,2'],['ご ろく なな','5,6,7'],['いち に いち','1,2,1'],
+  ['右上4は5','右上4=5'],['右下3は2','右下3=2'],['左下6は7','左下6=7'],['左上7は12','左上7=12'],
+  ['右上1から','位置を右上1へ'],['左下8から','位置を左下8へ'],
+  ['出血','出血の入力へ'],['右上6','右上6に出血'],['右下7と6','右下7・6に出血'],['BOP（ビーオーピー）','出血の入力へ'],['排膿 左下6','左下6に排膿'],['出血すべてなし','出血を全部消す'],['深さ','深さの入力へ'],
+  ['動揺','動揺度の入力へ'],['ゼロ','動揺度0（今の歯）','mob'],['いち','動揺度1（今の歯）','mob'],
+  ['右上7と右下7だけ2です','右上7・右下7が動揺度2'],['右上1と左上1だけ動揺が2度です','右上1・左上1が動揺度2'],['動揺は左上7と右下7が1で他はゼロ','左上7・右下7が1、他は0'],['その他は0','残りの動揺度を0','mob'],
+  ['右下6欠損','右下6を欠損'],['取り消し','直前を取り消す'],['次','次の歯へ'],['前','前の歯へ'],
+];
+const VT={i:0,items:[],stt:null,on:false,err:'',mode:'ppd',started:null};
+function vtReset(){VT.i=0;VT.items=VT_SCRIPT.map(([say,want,mode])=>({say,want,mode:mode||null,heard:[]}));VT.err='';VT.mode='ppd';VT.started=new Date().toISOString();}
+// アプリの読み方（入れずに解釈だけ）。✓＝入る形・✗＝入れない（理由）
+function vtJudge(text,mode){try{const r=vInterpret(text,mode);if(r.bad)return '✗ '+r.bad;if(!r.res||!r.res.cmds||!r.res.cmds.length)return '✗ 解釈できず';
+  const c=r.res.cmds.map(x=>x.t==='digit'?String(x.v):x.t==='assign'?toothName4(x.tooth)+'='+x.v:x.t==='tooth'?toothName4(x.tooth):x.t==='mode'?'〈'+x.m+'〉':x.t==='bopEnter'?'〈出血:'+x.kind+'〉':x.t==='teethMulti'?x.list.map(toothName4).join('・')+'='+x.v:x.t==='teethSet'?'〈'+x.t+'〉='+x.v:'〈'+x.t+'〉').join(' ');
+  return '✓ '+c+(r.res.noise?'（残り「'+r.res.noise+'」）':'');}catch(e){return '✗ エラー '+(e&&e.message||'');}}
+function toothName4(n){return ({1:'右上',2:'左上',3:'左下',4:'右下'}[Math.floor(n/10)]||'')+(n%10);}
+function renderVtest(){if(!VT.items.length)vtReset();const it=VT.items[VT.i],n=VT.items.length,done=VT.items.filter(x=>x.heard.length).length;
+  const mini=typeof createStt==='function';
+  app.innerHTML=`
+    <header class="bar"><button class="back" onclick="APP.vtLeave()">◀ 戻る</button><div class="htxt"><h1>🧪 声の試験</h1><div class="sub">原稿を1つずつ読む（院長用）</div></div></header>
+    <div class="wrap">
+      <div class="card" style="padding:20px;margin-top:16px;text-align:center">
+        <div style="font-size:.85rem;color:var(--soft)">${VT.i+1} / ${n}　（聞き取り済み ${done}）${it.mode==='mob'?'　<b style="color:#374151">動揺度の入力のつもりで</b>':''}</div>
+        <div style="font-size:2.4rem;font-weight:800;margin:14px 0 6px;line-height:1.3">${esc(it.say)}</div>
+        <div style="font-size:.9rem;color:var(--soft)">入ってほしいこと：${esc(it.want)}</div>
+        <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:18px">
+          ${mini?`<button class="btn-primary" style="width:auto;min-height:54px;padding:10px 22px;${VT.on?'background:#b91c1c':''}" onclick="APP.vtToggle()">${VT.on?'● 聞き取りを止める':'🎤 聞き取りを始める'}</button>`:'<div style="color:var(--bad);font-size:.9rem">この画面は「院内の Mac mini」の聞き取りでだけ使えます</div>'}
+          <button class="nb" style="min-height:54px;padding:10px 18px" onclick="APP.vtMove(-1)">← 前へ</button>
+          <button class="nb" style="min-height:54px;padding:10px 18px" onclick="APP.vtRedo()">やり直す</button>
+          <button class="btn-primary" style="width:auto;min-height:54px;padding:10px 26px;background:#0f766e" onclick="APP.vtMove(1)">次へ →</button>
+        </div>
+        <div id="vt-now" style="margin-top:16px;text-align:left">${vtNowHTML()}</div>
+        ${VT.err?`<div style="margin-top:10px;color:var(--bad);font-weight:700">${esc(VT.err)}</div>`:''}
+        <p style="font-size:.76rem;color:var(--soft);margin:14px 0 0">🎤を1回押したら、止めずに続けて読めます。1つ読んで文字が出たら「次へ」。うまく区切れなかったら「やり直す」。記録はこの画面の中だけで、最後に「結果を保存」を押すまでどこにも残りません。</p>
+      </div>
+      <button class="btn-primary" style="margin-top:14px" onclick="APP.vtSave()">💾 結果を保存（Claude に渡す）</button>
+      <div class="card" style="padding:14px 16px;margin-top:14px;font-size:.8rem">
+        ${VT.items.map((x,k)=>`<div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid var(--line2);${k===VT.i?'background:#eff6ff':''}"><span class="mono" style="flex:0 0 28px;color:var(--soft)">${k+1}</span><span style="flex:0 0 32%">${esc(x.say)}</span><span style="flex:1;min-width:0">${x.heard.length?x.heard.map(h=>`「${esc(h.text)}」 ${esc(h.judge)}`).join('<br>'):'<span style="color:var(--faint)">まだ</span>'}</span></div>`).join('')}
+      </div>
+    </div>`;}
+function vtNowHTML(){const it=VT.items[VT.i];if(!it)return '';
+  return it.heard.length?it.heard.map(h=>`<div style="padding:8px 12px;border-radius:10px;background:${/^✓/.test(h.judge)?'#f0fdf4':'#fff7ed'};margin-bottom:6px"><b>聞き取り「${esc(h.text)}」</b><br><span style="font-size:.86rem">${esc(h.judge)}</span></div>`).join('')
+    :`<div style="padding:8px 12px;color:var(--soft)">${VT.on?'（聞いています。原稿を読んでください）':'（🎤を押してから読んでください）'}</div>`;}
+function vtStop(){VT.on=false;if(VT.stt){try{VT.stt.abort();}catch(_){}VT.stt=null;}}
+function vtText(){const lines=['# 歯周検査 声の試験（Mac mini の聞き取り）','日時\t'+fmtWhen(VT.started||new Date().toISOString()),'アプリ\tv'+APP_VERSION,'端末\t'+(navigator.userAgent.match(/(iPad|iPhone|Macintosh)[^)]*/)||[''])[0],'',['番号','原稿','入ってほしいこと','聞き取った文字','アプリの読み方'].join('\t')];
+  VT.items.forEach((x,k)=>{if(!x.heard.length)lines.push([k+1,x.say,x.want,'（なし）',''].join('\t'));else x.heard.forEach(h=>lines.push([k+1,x.say,x.want,h.text,h.judge+(h.cut?'（15秒で切れた）':h.soft?'（途中で分けた）':'')].join('\t')));});
+  return lines.join('\n')+'\n';}
 function vRefreshPanel(){if(pe&&route&&route.name==='perio')refreshPeMain();const b=document.getElementById('voice-bar');if(b)b.innerHTML=vBarHTML();const p=document.getElementById('voice-panel');if(p)p.innerHTML=vPanelHTML();const vb=document.getElementById('vbtn');if(vb){const on=vc.active||vc.dict;vb.className='vbtn'+(on?' on':'');vb.textContent=on?'● 音声 停止':'🎤 音声入力';}dictStatus();}
 
 // ───────── 歯周検査 本体（前回値の引き継ぎ＋変更ハイライト） ─────────
@@ -4329,6 +4395,18 @@ window.APP={
   rsUseMine:async i=>{const x=RS.conf[i];if(!x||x.mine==null)return;if(!confirm(rsConfLabel(x)+' を、この iPad で入れた内容に戻して Mac mini にも送ります。よろしいですか？'))return;
     if(await rsApply(x.key,x.mine)){}RS.out[x.key]={v:x.mine,base:RS.st.vers[x.key]||0,wid:rsWid()};RS.conf.splice(i,1);await rsSave();rsSync();render();},
   rsDropConf:async i=>{if(!RS.conf[i]||!confirm('この控えを消します（今の記録は変わりません）。よろしいですか？'))return;RS.conf.splice(i,1);await rsSave();render();},
+  vtToggle:()=>{if(VT.on){vtStop();renderVtest();return;}if(typeof createStt!=='function')return;
+    VT.err='';VT.stt=createStt({hint:'perio',
+      onText:(t,info)=>{const it=VT.items[VT.i];if(!it)return;const mode=it.mode||VT.mode;it.heard.push({text:t,judge:vtJudge(t,mode),cut:!!(info&&info.cut),soft:false});
+        try{const r=vInterpret(t,mode);if(r&&r.res&&!r.bad)r.res.cmds.forEach(c=>{if(c.t==='mode')VT.mode=c.m;if(c.t==='bopEnter')VT.mode='bop';});}catch(_){}
+        renderVtest();},
+      onResult:res=>{if(res&&!res.text&&res.info&&(res.info.cut||res.info.dropped)){const it=VT.items[VT.i];if(it)it.heard.push({text:'（文字にならず：'+(res.info.dropped||'15秒で切れた')+'）',judge:'✗',cut:!!res.info.cut});renderVtest();}},
+      onError:e=>{VT.err='Mac mini の聞き取り：'+((e&&e.message)||(e&&e.kind)||'');if(e&&e.fatal)vtStop();renderVtest();}});
+    VT.on=true;try{VT.stt.start();}catch(e){VT.on=false;VT.err=String(e&&e.message||e);}renderVtest();},
+  vtMove:d=>{VT.i=Math.max(0,Math.min(VT.items.length-1,VT.i+d));renderVtest();},
+  vtRedo:()=>{const it=VT.items[VT.i];if(it)it.heard=[];renderVtest();},
+  vtSave:async()=>{const r=await saveFile('声の試験_'+ymdToday()+'.txt',vtText(),'text/plain');toast(r==='shared'||r==='downloaded'?'保存しました（AirDrop で院長の Mac へ送ってください）':r==='aborted'?'やめました':'保存できませんでした');},
+  vtLeave:()=>{if(VT.items.some(x=>x.heard.length)&&!confirm('試験の記録は「結果を保存」を押さないと消えます。戻りますか？'))return;vtStop();VT.items=[];go({name:'home'});},
   vUseEngine:k=>{try{localStorage.setItem('perio_voice_engine',k);}catch(_){}if(k==='mini')vc.miniOk=null,sttProbe();vc.kbd=k==='kbd';if(vc.active)vStop();if(vc.dict)APP.dictClose();vRefreshPanel();},
   dictOpen:()=>{if(!pe||pe.readOnly||!hasVoice(pe.type))return;if(pe.intro)APP.introDone('');vc.dict=true;dictCommitted='';
     vSyncStart();
