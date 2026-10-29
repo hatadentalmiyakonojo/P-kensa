@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8"/>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'self' https://mini.hatadental.net:8443 https://*.hatadental.net:8443 https://mini.hatadental.net:8447 https://*.hatadental.net:8447 http://127.0.0.1:* http://localhost:*; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'self' https://mini.hatadental.net:8443 https://*.hatadental.net:8443 https://mini.hatadental.net:8447 https://*.hatadental.net:8447 https://mini.hatadental.net:8446 http://127.0.0.1:* http://localhost:*; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="format-detection" content="telephone=no"/>
@@ -1366,6 +1366,156 @@
 })(typeof window !== 'undefined' ? window : this);
 /* STT-CLIENT:END */
 </script>
+<script>
+/* ROSTER-CLIENT:BEGIN v1 ─ 患者名簿の窓口につなぐ部品（正本: Ai/患者名簿/client/roster-client.js・直接直さない） */
+/* 患者名簿の窓口（Mac mini :8446）につなぐ部品。歯周検査・口腔機能管理で共通。
+   正本は 患者名簿/client/roster-client.js。アプリには 患者名簿/client/inline_roster_client.py で埋め込む
+   （アプリの中の ROSTER-CLIENT:BEGIN〜END は手で直さない）。
+
+   - 鍵は院長が出した8けたの番号と引き換えに1回だけ受け取り、「取り出せない鍵」（WebCrypto の HMAC・extractable=false）
+     にして IndexedDB（hata-roster）にしまう。しまえないブラウザでは、鍵の文字をしまう（kind='raw'）
+   - 毎回の問い合わせに判子（HMAC-SHA256：方式・道・時刻・使い捨ての値・中身の指紋）を付ける。鍵そのものは送らない
+   - 番号や名前は住所（URL）に入れず中身で送る。返事は保存しない（呼び出し側も、タップして登録した人のほかは覚えない）
+   - 3秒で返事が無ければあきらめる（手で入れられるまま待たせない）
+   - 鍵はアプリごとに別の置き場所（'device:perio'・'device:oral'）。2つのアプリは同じ住所（github.io）なので、
+     置き場所を分けないと片方のつなぎ直しでもう片方の鍵が入れ替わる。アプリは最初に HataRoster.app を決める
+   - 「鍵を消す」は、窓口にもその鍵を使えなくするよう伝えてから消す
+   - 同じ住所の別のアプリに悪いプログラムが入ると、この鍵で判子を押せてしまう（取り出せないが、その場では使える）。
+     窓口の回数の上限（1台・24時間で100人）が被害の上限
+*/
+(function () {
+  'use strict';
+  var DB = 'hata-roster', STORE = 'keys';
+  var R = { url: 'https://mini.hatadental.net:8446', timeoutMs: 3000, offset: 0, app: '' };
+  function slot() {
+    if (R.app !== 'perio' && R.app !== 'oral') throw Object.assign(new Error('アプリが決まっていません（HataRoster.app）'), { kind: 'input' });
+    return 'device:' + R.app;
+  }
+  var enc = new TextEncoder();
+
+  function idb() {
+    return new Promise(function (ok, ng) {
+      var q = indexedDB.open(DB, 1);
+      q.onupgradeneeded = function () { q.result.createObjectStore(STORE); };
+      q.onsuccess = function () { ok(q.result); };
+      q.onerror = function () { ng(q.error); };
+    });
+  }
+  function tx(mode, fn) {
+    return idb().then(function (db) {
+      return new Promise(function (ok, ng) {
+        var t = db.transaction(STORE, mode), st = t.objectStore(STORE), out;
+        try { out = fn(st); } catch (e) { db.close(); ng(e); return; }
+        t.oncomplete = function () { db.close(); ok(out && 'result' in out ? out.result : undefined); };
+        t.onerror = t.onabort = function () { db.close(); ng(t.error || new Error('IndexedDB')); };
+      });
+    });
+  }
+  var cache = {};     // しまってある記録（アプリごと {device,name,app,kind,key|raw}）
+  function load() {
+    var s;
+    try { s = slot(); } catch (e) { return Promise.reject(e); }
+    if (cache[s] !== undefined) return Promise.resolve(cache[s]);
+    return tx('readonly', function (st) { return st.get(s); }).then(function (v) { cache[s] = v || null; return cache[s]; },
+      function () { cache[s] = null; return null; });
+  }
+  function b64ToBytes(s) { var b = atob(s), a = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; }
+  function bytesToB64u(buf) {
+    var a = new Uint8Array(buf), s = '';
+    for (var i = 0; i < a.length; i++) s += String.fromCharCode(a[i]);
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function hex(buf) { var a = new Uint8Array(buf), s = ''; for (var i = 0; i < a.length; i++) s += (a[i] < 16 ? '0' : '') + a[i].toString(16); return s; }
+  function hmacKey(raw, extractable) {
+    return crypto.subtle.importKey('raw', raw, { name: 'HMAC', hash: 'SHA-256' }, extractable, ['sign']);
+  }
+
+  function post(path, bodyText, headers) {
+    var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctl) ctl.abort(); }, R.timeoutMs);
+    var h = { 'Content-Type': 'application/json' };
+    for (var k in headers || {}) h[k] = headers[k];
+    return fetch(R.url + path, { method: 'POST', body: bodyText, headers: h, cache: 'no-store', credentials: 'omit',
+      mode: 'cors', signal: ctl ? ctl.signal : undefined, referrerPolicy: 'no-referrer' })
+      .then(function (r) {
+        // 中身を読み終えるまでが3秒（返事の頭だけ来て止まったときも待たせない）
+        return r.json().catch(function () { return {}; }).then(function (j) { clearTimeout(timer); j._status = r.status; return j; });
+      }).then(null, function (e) {
+        clearTimeout(timer);
+        var err = new Error('名簿（Mac mini）につながりません'); err.kind = 'net'; throw err;
+      });
+  }
+
+  // 院長が出した8けたの番号で鍵を受け取る
+  R.pair = function (code, app) {
+    if (app) R.app = app;
+    var s;
+    try { s = slot(); } catch (e) { return Promise.reject(e); }
+    app = R.app;
+    code = String(code || '').replace(/[^0-9０-９]/g, '').replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); });
+    if (code.length !== 8) return Promise.reject(Object.assign(new Error('8けたの番号を入れてください'), { kind: 'input' }));
+    return post('/v1/pair', JSON.stringify({ code: code, app: app })).then(function (j) {
+      if (j._status !== 200 || !j.secret) throw Object.assign(new Error(j.error || '鍵を受け取れませんでした'), { kind: 'pair' });
+      var raw = b64ToBytes(j.secret);
+      return hmacKey(raw, false).then(function (key) {
+        var rec = { device: j.device, name: j.name, app: app, kind: 'key', key: key, at: Date.now() };
+        return tx('readwrite', function (st) { st.put(rec, s); }).then(function () { return rec; }, function () {
+          // 取り出せない鍵をしまえないブラウザ → 鍵の文字をしまう（院内だけ・回数の上限で守る）
+          var rec2 = { device: j.device, name: j.name, app: app, kind: 'raw', raw: j.secret, at: Date.now() };
+          return tx('readwrite', function (st) { st.put(rec2, s); }).then(function () { return rec2; });
+        });
+      }).then(function (rec) { raw.fill(0); cache[s] = rec; return { name: rec.name, kind: rec.kind }; });
+    });
+  };
+  // 鍵を消す：窓口にも伝える（つながらなくても、この iPad からは消す。窓口では院長の画面で「止める」）
+  R.forget = function () {
+    var s;
+    try { s = slot(); } catch (e) { return Promise.reject(e); }
+    var told = signed('/v1/forget', {}).then(function () { return true; }, function () { return false; });
+    return told.then(function (ok) {
+      cache[s] = null;
+      return tx('readwrite', function (st) { st.delete(s); }).then(function () { return { told: ok }; });
+    });
+  };
+  R.info = function () { return load().then(function (r) { return r ? { name: r.name, app: r.app, kind: r.kind, device: r.device } : null; }); };
+
+  function signed(path, obj, retried) {
+    return load().then(function (rec) {
+      if (!rec) throw Object.assign(new Error('名簿につないでいません'), { kind: 'unpaired' });
+      var body = JSON.stringify(obj || {});
+      var ts = String(Date.now() + R.offset);
+      var n = new Uint8Array(16); crypto.getRandomValues(n);
+      var nonce = bytesToB64u(n);
+      var keyP = rec.kind === 'key' ? Promise.resolve(rec.key) : hmacKey(b64ToBytes(rec.raw), false);
+      return Promise.all([keyP, crypto.subtle.digest('SHA-256', enc.encode(body))]).then(function (a) {
+        var base = ['v1', 'POST', path, ts, nonce, hex(a[1])].join('\n');
+        return crypto.subtle.sign('HMAC', a[0], enc.encode(base));
+      }).then(function (sig) {
+        return post(path, body, { 'X-Roster-Device': rec.device, 'X-Roster-Time': ts, 'X-Roster-Nonce': nonce,
+          'X-Roster-Sig': bytesToB64u(sig) });
+      }).then(function (j) {
+        if (j._status === 401 && j.code === 'time' && j.server_time && !retried) {   // iPad の時計のずれを合わせて1回だけやり直す
+          R.offset = j.server_time - Date.now();
+          return signed(path, obj, true);
+        }
+        if (j._status !== 200) {
+          var e = new Error(j.error || '名簿の窓口でエラー（' + j._status + '）');
+          e.kind = j._status === 401 ? (j.code === 'unknown' ? 'unpaired' : 'auth') : j._status === 403 ? (j.code || 'denied') : 'server';
+          throw e;
+        }
+        return j;
+      });
+    });
+  }
+  // 戻り値 {no（聞いた番号そのまま）, found, item:{no,sei,mei,seiKana,meiKana,birth,sex}|null, asof, stale}
+  R.lookup = function (no) { return signed('/v1/lookup', { no: String(no) }); };
+  R.search = function (q) { return signed('/v1/search', { q: String(q) }); };
+  R.refresh = function () { return signed('/v1/refresh', {}); };
+  R.status = function () { return signed('/v1/status', {}); };
+  window.HataRoster = R;
+})();
+/* ROSTER-CLIENT:END */
+</script>
 </head>
 <body>
 <div id="topbars"></div>
@@ -1537,9 +1687,10 @@ const store={
 // ★PocketBase導入時：ミニPCでPBを起動し、下の url に院内サーバーのアドレスを入れるだけ。設定例：'http://192.168.1.50:8090'
 //   url='' のあいだは【端末内保存】。LOCAL.on=false でメモリのみに戻せる。
 const PB={url:''};
-const APP_VERSION='0.16.5';const DATA_SCHEMA=1;
+const APP_VERSION='0.17.0';const DATA_SCHEMA=1;
 // 更新内容（新しい順・アプリ内の「更新内容」とホームの「更新しました」に出す）
 const CHANGES=[
+  ['0.17.0','患者名簿を院内の Mac mini から：カルテ番号を入れると、Mac mini の名簿からその1人分だけを引く（iPad に名簿を置かない・院内の Wi-Fi だけ・院長が出した番号で iPad ごとにつなぐ）。ホームの「名簿から探す」。バックアップの画面の「患者名簿（Mac mini）」でつなぐ。しばらくは、つながらないときだけこの端末の名簿（レセコンCSV）を使う'],
   ['0.16.5','音声：マイクの感度を選べるように（ふつう／やや低い／低い。初めは「低い」＝近くの声だけ拾い、まわりの話し声を拾いにくい）。音声の詳細と声の試験の画面で切り替え'],
   ['0.16.4','音声（院長の声の試験から）：「にい」「用」「Q」「ダーナー」「同様」「はい、の」などの聞き違いを数字・動揺・排膿として読む。「右上7と…」のように途中で区切れた発話は次とつなげて読む。声の試験の画面に今の入力（深さ・出血・動揺度）を出す'],
   ['0.16.3','Mac mini に記録が届いている iPad では、JSONの書き出しの促しを出さないように（Mac mini に1日以上届いていないときだけ知らせる）'],
@@ -2121,17 +2272,18 @@ const HOME_LIMIT=200; // 一覧に一度に出す人数（検索すれば全員�
 let homeMore=false;
 function patientListHTML(){
   const q=nz(homeQ);
-  if(!store.patients.length&&!(q&&rosterSearch(homeQ).length))return `<div class="card" style="text-align:center;color:var(--soft);padding:28px 16px;font-size:.92rem;line-height:1.7">まだ患者さんが登録されていません。<br>「＋ 新規」で登録してください（「📖 患者名簿」を読み込んでおくと、カルテ番号や氏名で探してすぐ登録できます）。</div>`;
+  const useNet=nrUse();const nrBox=useNet&&q?nrHomeHTML():'';
+  if(!store.patients.length&&!nrBox&&!(q&&rosterSearch(homeQ).length))return `<div class="card" style="text-align:center;color:var(--soft);padding:28px 16px;font-size:.92rem;line-height:1.7">まだ患者さんが登録されていません。<br>「＋ 新規」で登録してください（「📖 患者名簿」を読み込んでおくと、カルテ番号や氏名で探してすぐ登録できます）。</div>`;
   // 最近検査した患者を上に（検査の無い患者は登録の新しい順で後ろ）
   const last=new Map();store.exams.forEach(e=>{if(e.date&&(!last.has(e.patientId)||e.date>last.get(e.patientId)))last.set(e.patientId,e.date);});
   const order=new Map(store.patients.map((p,i)=>[p,i]));
   let list=store.patients.filter(p=>!q||nz(p.name).includes(q)||nz(p.kana).includes(q)||nz(p.no).includes(q)||nz(p.chartNo).includes(q)||nz(p.recNo).includes(q));
   list.sort((a,b)=>{const la=last.get(a.id)||'',lb=last.get(b.id)||'';if(la!==lb)return la<lb?1:-1;return order.get(b)-order.get(a);});
-  const rs=q?rosterSearch(homeQ):[];
+  const rs=q&&!useNet?rosterSearch(homeQ):[];
   const rosterHTML=rs.length?`<div class="card" style="padding:10px 14px;margin:6px 0 12px;border:1px dashed #93c5fd"><div style="font-size:.8rem;color:#1e3a8a;font-weight:700;margin-bottom:6px">📖 名簿にいる人（まだ登録していません）</div>${rs.map(it=>`<button class="dcand" onclick="APP.newFromRoster(${jsq(it[0])})"><span class="mono">No.${esc(it[0])}</span> ${rosterLine(it)} <span class="ibadge" style="color:#1e3a8a;background:var(--blue-bg)">＋ 登録する</span></button>`).join('')}</div>`:'';
-  if(!list.length)return rosterHTML+(rosterHTML?'':'<p style="text-align:center;color:var(--soft);padding:40px 0;font-size:.9rem">該当する患者がいません。氏名・フリガナ・番号の一部で探してください。</p>');
+  if(!list.length)return nrBox+rosterHTML+(rosterHTML||nrBox?'':'<p style="text-align:center;color:var(--soft);padding:40px 0;font-size:.9rem">該当する患者がいません。氏名・フリガナ・番号の一部で探してください。</p>');
   const more=!q&&!homeMore&&list.length>HOME_LIMIT;const shown=more?list.slice(0,HOME_LIMIT):list;
-  return rosterHTML+shown.map(p=>{const a=computeAge(p.birth);const lt=last.get(p.id);return `
+  return nrBox+rosterHTML+shown.map(p=>{const a=computeAge(p.birth);const lt=last.get(p.id);return `
         <button class="plist-item" onclick="APP.openPatient(${jsq(p.id)})">
           <span><span class="pname">${esc(p.name)}</span>${SAMPLE_PIDS.has(p.id)?'<span class="sbadge">見本</span>':''}<span class="pkana">${esc(p.kana)}</span>
             <div class="pmeta"><span class="mono">${esc(p.no)}</span>${p.chartNo?' ・ カルテ'+esc(p.chartNo):''}${p.recNo?' ・ レセ'+esc(p.recNo):''}${a!=null?' ・ '+a+'歳':''}${lt?' ・ 最終検査 '+ymdJP(lt):''}</div></span>
@@ -2195,6 +2347,7 @@ function renderPatientForm(pid){
 }
 // カルテ番号に合う名簿の候補（新規登録のとき）。編集のときは名簿と違えば知らせる
 function dictCandsHTML(){if(!pf)return '';
+  if(nrUse())return nrCandsHTML();
   if(!roster)return pf._for==='new'?'<p style="font-size:.72rem;color:var(--soft);margin:0">「📖 患者名簿（レセコンCSV）」を読み込むと、カルテ番号を入れるだけで氏名・生年月日が入ります。</p>':'';
   if(pf._for!=='new'){const it=pf.chartNo&&rosterMap().get(normNo(pf.chartNo));if(!it)return '';
     const same=nz(it[1]+it[2])===nz(pf.sei+pf.mei)&&(!it[3]||it[3]===pf.birth);
@@ -2289,8 +2442,9 @@ function renderBackup(){
       ${preRestoreInfo?`<button class="nb" style="width:100%;margin-top:10px;font-weight:700" onclick="APP.bkUndoRestore()">↩ 直前の${preRestoreInfo.kind==='merge'?'統合（患者をまとめた）':'復元'}を取り消す（${esc(fmtWhen(preRestoreInfo.at))} の状態：患者 ${preRestoreInfo.patients}名・検査 ${preRestoreInfo.exams}件に戻す）</button><p style="font-size:.72rem;color:var(--soft);margin:4px 2px 0">復元の控えは3日で自動的に消えます。</p>`:''}
       <button style="width:100%;padding:13px;border:1px solid var(--line);border-radius:16px;background:#fff;color:#374151;font-weight:600;font-size:.9rem;cursor:pointer;margin-top:14px" onclick="APP.exportCsv()">📄 検査の一覧をCSVで書き出す（表計算用）</button>
       <p style="font-size:.74rem;color:var(--soft);margin:6px 2px 0">1検査1行（検査日・種別・担当・BOP率・4mm以上・PCR など）。氏名が入るので、JSONと同じく院外に出さないでください。</p>
+      ${nrCardHTML()}
       <div class="card" style="padding:18px;margin-top:16px">
-        <h2 style="font-size:.9rem;font-weight:700;margin:0 0 8px">📖 患者名簿（レセコンCSV）</h2>
+        <h2 style="font-size:.9rem;font-weight:700;margin:0 0 8px">📖 患者名簿（レセコンCSV・この端末の中）</h2>
         <p style="font-size:.8rem;margin:0 0 8px">${rosterInfoHTML()}</p>
         <p style="font-size:.74rem;color:var(--soft);margin:0 0 10px">レセコンの患者CSV（予約CSVでも可・全患者分）を読み込むと、新規登録でカルテ番号を入れるだけで氏名・生年月日が入り、ホームの検索でもまだ登録していない人が出ます。患者一覧には出ません。名簿はこの端末の中だけに置き、バックアップ・Mac mini には入れません（iPadごとに読み込み・<b>毎月など定期的に読み込み直してください</b>）。</p>
         <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="nb" style="font-weight:700" onclick="APP.rosterOpen()">📖 名簿を読み込む（置き換え）</button>${roster?'<button class="nb danger" onclick="APP.rosterClear()">名簿を消す</button>':''}<button class="nb" onclick="APP.openImport()">📥 CSVの患者を患者一覧にまとめて登録（従来）</button></div>
@@ -2893,6 +3047,57 @@ function rosterSearch(q){const m=rosterMap();if(!m)return [];const raw=String(q|
   const isNo=/^[0-9０-９]+$/.test(raw);if(!isNo&&nz(raw).length<2)return [];
   const list=isNo?rosterCands(raw):roster.items.filter(it=>nz(it[1]+it[2]).includes(nz(raw))||(it[4]&&nz(it[4]+it[5]).includes(nz(raw)))).slice(0,30);
   return list.filter(it=>!rosterRegistered(it[0])).slice(0,8);}
+// ───────── 患者名簿（Mac mini）＝院内の Mac mini に1人ずつ聞く（v0.17.0。設計: 書類・資料/企画・レポート/患者名簿の自動取り込み_設計.html）
+// iPad には名簿を置かない。並走の間は、Mac mini につながらないときだけ、この端末の名簿（レセコンCSV）があればそれを使う。
+// 聞いた答えは画面に出すだけで覚えない（タップして登録した人は今までどおり患者として保存。登録の下書きにも残る）。
+const NR={paired:null,key:'',cand:undefined,asof:'',stale:false,err:'',errKind:'',timer:0,home:null,statusText:''};
+const hasNR=()=>typeof HataRoster!=='undefined';
+if(hasNR())HataRoster.app='perio';   // 鍵の置き場所はアプリごと（口腔機能管理と同じ住所なので分ける）
+const nrItem=x=>[String(x.no||''),x.sei||'',x.mei||'',x.birth||'',x.seiKana||'',x.meiKana||'',x.sex||''];   // この端末の名簿と同じ形
+function nrInit(){if(!hasNR())return Promise.resolve();return HataRoster.info().then(i=>{NR.paired=i;if(i&&route&&(route.name==='home'||route.name==='backup'||route.name==='patientForm'))render();}).catch(()=>{});}
+function nrErr(e){NR.errKind=e&&e.kind||'';NR.err=NR.errKind==='net'?'名簿（Mac mini）につながりません（院内の Wi-Fi か確かめてください）':(e&&e.message||'名簿（Mac mini）でエラー');
+  if(NR.errKind==='unpaired')NR.paired=null;}
+// カルテ番号を打ち終えて少し止まったら聞く。打ち直したあとに届いた古い返事は捨てる（返事に付いた番号と今の欄を比べる）
+function nrAsk(no,now){clearTimeout(NR.timer);const k=normNo(no);NR.key=k;NR.cand=undefined;NR.err='';NR.errKind='';if(!k||!NR.paired||!hasNR())return;
+  NR.timer=setTimeout(()=>{HataRoster.lookup(String(no)).then(j=>{if(NR.key!==k||normNo(j.no)!==k||!pf||normNo(pf.chartNo)!==k)return;
+      NR.cand=j.found&&j.item?nrItem(j.item):null;NR.asof=j.asof||'';NR.stale=!!j.stale;nrPaint();},
+    e=>{if(NR.key!==k)return;nrErr(e);nrPaint();});},now?0:450);}
+function nrPaint(){const el=document.getElementById('dict-cands');if(el)el.innerHTML=dictCandsHTML();}
+// 名簿の1人（Mac mini の答え → ホームで探した答え → この端末の名簿）
+function rosterGet(no){const k=normNo(no);if(NR.cand&&normNo(NR.cand[0])===k)return NR.cand;
+  if(NR.home&&NR.home.items){const h=NR.home.items.find(x=>normNo(x[0])===k);if(h)return h;}
+  const m=rosterMap();return m&&m.get(k)||null;}
+const nrUse=()=>!!(NR.paired&&!(NR.errKind==='net'&&roster));   // Mac mini に聞く（つながらないときだけ、この端末の名簿があればそちらで。止められた鍵では使わない）
+const nrAsofText=()=>NR.asof?fmtWhen(NR.asof)+' 時点':'';
+function nrCandsHTML(){const k=normNo(pf.chartNo);
+  if(k&&NR.key!==k)nrAsk(pf.chartNo,true);                      // 編集の画面を開いたとき・番号が入っている新規の画面
+  const small=(s,c)=>`<p style="font-size:.74rem;color:${c||'var(--soft)'};margin:0">${s}</p>`;
+  if(pf._for!=='new'){const it=NR.cand&&normNo(NR.cand[0])===k?NR.cand:null;if(!it)return NR.err&&k?small(esc(NR.err),'#b91c1c'):'';
+    const same=nz(it[1]+it[2])===nz(pf.sei+pf.mei)&&(!it[3]||it[3]===pf.birth);
+    return same?'':`<div class="banner" style="padding:8px 12px">名簿では：${rosterLine(it)} <button class="tbtn" onclick="APP.pfDictPick(${jsq(it[0])})">名簿の値にする</button></div>`;}
+  if(pf._dictPicked||!k)return '';
+  if(NR.err)return small(esc(NR.err)+'（氏名は手で入れてください）','#b91c1c');
+  if(NR.cand===undefined)return small('名簿（Mac mini）に聞いています…');
+  if(!NR.cand)return small(`名簿にこのカルテ番号の人はいません（${esc(nrAsofText())}）。今日はじめて来た方なら <button class="tbtn" onclick="APP.nrRefresh()">名簿を取り直す</button>`);
+  const it=NR.cand,reg=rosterRegistered(it[0]);
+  return `<div class="dcands" role="listbox" aria-label="名簿の候補"><button class="dcand" onclick="APP.pfDictPick(${jsq(it[0])})"><span class="mono">No.${esc(it[0])}</span> ${rosterLine(it)}${reg?` <span class="ibadge" style="color:#9a3412;background:#ffedd5">登録済み ${esc(reg.no)}</span>`:''}</button></div>
+    <p style="font-size:.72rem;color:var(--soft);margin:4px 0 0">タップすると氏名・生年月日が入ります（名簿：Mac mini・${esc(nrAsofText())}${NR.stale?'・<b style="color:#b45309">古くなっています</b>':''}）。</p>`;}
+function nrHomeHTML(){const h=NR.home&&NR.home.q===homeQ?NR.home:null;let body;
+  if(!h)body=`<button class="tbtn" onclick="APP.nrHome()">名簿から探す</button> <span style="font-size:.72rem;color:var(--soft)">まだ登録していない人を、カルテ番号か名前（2文字以上）で</span>`;
+  else if(h.busy)body='<p style="font-size:.74rem;color:var(--soft);margin:0">名簿（Mac mini）に聞いています…</p>';
+  else if(h.err)body=`<p style="font-size:.74rem;color:#b91c1c;margin:0">${esc(h.err)}</p>`;
+  else{const items=h.items.filter(it=>!rosterRegistered(it[0]));
+    body=items.length?items.map(it=>`<button class="dcand" onclick="APP.newFromRoster(${jsq(it[0])})"><span class="mono">No.${esc(it[0])}</span> ${rosterLine(it)} <span class="ibadge" style="color:#1e3a8a;background:var(--blue-bg)">＋ 登録する</span></button>`).join('')
+      :'<p style="font-size:.74rem;color:var(--soft);margin:0">名簿に見つかりません（まだ登録していない人だけを出します）。</p>';}
+  return `<div class="card" style="padding:10px 14px;margin:6px 0 12px;border:1px dashed #93c5fd"><div style="font-size:.8rem;color:#1e3a8a;font-weight:700;margin-bottom:6px">📖 名簿（Mac mini）</div>${body}</div>`;}
+function nrCardHTML(){if(!hasNR())return '';const p=NR.paired;
+  return `<div class="card" style="padding:18px;margin-top:16px"><h2 style="font-size:.9rem;font-weight:700;margin:0 0 8px">📖 患者名簿（Mac mini）</h2>
+  ${p?`<p style="font-size:.8rem;margin:0 0 8px">つないでいます：<b>${esc(p.name)}</b>${p.kind==='raw'?'（鍵はふつうの形でしまっています）':''}</p>
+    <p id="nr-status" style="font-size:.74rem;color:var(--soft);margin:0 0 10px">${esc(NR.statusText)}</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="nb" onclick="APP.nrStatus()">名簿の状態を見る</button><button class="nb" onclick="APP.nrRefresh()">名簿を取り直す</button><button class="nb danger" onclick="APP.nrForget()">この iPad の鍵を消す</button></div>`
+  :`<p style="font-size:.74rem;color:var(--soft);margin:0 0 10px">院長が「名簿の鍵」の画面（院内の Mac mini・https://mini.hatadental.net:8446/admin）で出した8けたの番号を入れると、カルテ番号を入れたときに Mac mini の名簿からその1人分だけを引きます（院内の Wi-Fi だけ）。iPad に名簿は置きません。ホーム画面のアイコンから開いたアプリで入れてください。</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><input id="nr-code" class="ic" style="max-width:12em" inputmode="numeric" autocomplete="one-time-code" placeholder="8けたの番号"/><button class="nb" style="font-weight:700" onclick="APP.nrPair()">つなぐ</button></div>`}
+  </div>`;}
 const rosterLine=it=>`${esc(it[1])} ${esc(it[2])}${it[4]?`（${esc(it[4])} ${esc(it[5])}）`:''}${it[3]?' ・ '+ymdJP(it[3])+'生（'+computeAge(it[3])+'歳）':' ・ 生年月日なし'}`;
 function rosterInfoHTML(){if(!roster)return 'まだ読み込んでいません。';const days=Math.floor((Date.now()-new Date(roster.at))/86400000);
   return `${esc(fmtWhen(roster.at))} に読み込み（${days===0?'今日':days+'日前'}）・患者 ${roster.n.toLocaleString()}名${roster.kana?'・フリガナあり':''}`;}
@@ -4215,8 +4420,8 @@ window.APP={
   cancelImport:()=>{importData=null;go({name:'home'});},
   // patient form
   pfSet:(k,v)=>{pf[k]=v;pfTouch();},
-  pfChart:v=>{pf.chartNo=v;pf._dictPicked=false;pfTouch();const el=document.getElementById('dict-cands');if(el)el.innerHTML=dictCandsHTML();},
-  pfDictPick:no=>{const it=rosterMap()&&rosterMap().get(normNo(no));if(!it||!pf)return;
+  pfChart:v=>{pf.chartNo=v;pf._dictPicked=false;pfTouch();if(NR.paired)nrAsk(v);const el=document.getElementById('dict-cands');if(el)el.innerHTML=dictCandsHTML();},
+  pfDictPick:no=>{const it=rosterGet(no);if(!it||!pf)return;
     const reg=rosterRegistered(it[0]);if(reg&&pf._for==='new'&&confirm(`${reg.no} ${reg.name} として登録済みです。その患者のページを開きますか？\n（「キャンセル」で、このまま新しく登録を続けます）`)){pf=null;clearDraft('pf');go({name:'patientDetail',patientId:reg.id});return;}
     ['sei','mei','seiKana','meiKana'].forEach(k=>{const el=document.getElementById({sei:'f-sei',mei:'f-mei',seiKana:'f-seik',meiKana:'f-meik'}[k]);if(el)pf[k]=el.value;});
     pf.chartNo=it[0];if(!pf.recNo)pf.recNo=it[0];pf.sei=it[1];pf.mei=it[2];
@@ -4226,7 +4431,7 @@ window.APP={
     setTimeout(()=>{const el=document.getElementById(it[4]?'f-seik':'f-seik');if(el&&!it[4])el.focus();},60);
     toast(it[4]?'名簿から氏名・フリガナ・生年月日を入れました':'名簿から氏名・生年月日を入れました（フリガナは入れてください）');},
   // ホームの検索で見つかった名簿の人を、新規登録に入れて開く
-  newFromRoster:no=>{const it=rosterMap()&&rosterMap().get(normNo(no));if(!it)return;
+  newFromRoster:no=>{const it=rosterGet(no);if(!it)return;
     if(drafts.pf&&drafts.pf.for==='new'&&!confirm('保存されていない新規患者の控えがあります。破棄して、名簿の人を登録しますか？'))return;
     if(drafts.pf&&drafts.pf.for==='new')clearDraft('pf');
     pf={_for:'new',chartNo:'',recNo:'',sei:'',mei:'',seiKana:'',meiKana:'',gender:'',notes:'',bd:{era:'昭和',ey:'',m:'',d:''},birth:'',errs:{},kanaLock:{seiKana:false,meiKana:false}};
@@ -4255,6 +4460,22 @@ window.APP={
     const r=await mergePatients(a.id,b.id);if(!r){showErr('まとめられませんでした（端末に書き込めません）。記録は元のままです。');return;}
     APP.helpClose();mergeFrom=null;toast(`まとめました（検査${r.exams}件・文書${r.docs}件を ${b.no} へ）`);go({name:'patientDetail',patientId:b.id});},
   homeMore:()=>{homeMore=true;const pl=document.getElementById('plist');if(pl)pl.innerHTML=patientListHTML();},
+  // 患者名簿（Mac mini）
+  nrHome:()=>{const q=homeQ,raw=String(q||'').trim();if(!raw||!hasNR())return;const isNo=/^[0-9０-９]+$/.test(raw);
+    if(!isNo&&nz(raw).length<2){toast('⚠ 名前は2文字以上で探してください');return;}
+    const paint=()=>{const pl=document.getElementById('plist');if(pl&&route.name==='home')pl.innerHTML=patientListHTML();};
+    NR.home={q,busy:true};paint();
+    (isNo?HataRoster.lookup(raw).then(j=>j.found&&j.item?[nrItem(j.item)]:[]):HataRoster.search(raw).then(j=>(j.items||[]).map(nrItem)))
+      .then(items=>{if(NR.home&&NR.home.q===q)NR.home={q,items};paint();},e=>{nrErr(e);if(NR.home&&NR.home.q===q)NR.home={q,err:NR.err};paint();});},
+  nrPair:()=>{const el=document.getElementById('nr-code');const v=el?el.value:'';if(!hasNR())return;
+    HataRoster.pair(v,'perio').then(()=>HataRoster.info()).then(i=>{NR.paired=i;NR.err='';toast('名簿（Mac mini）につなぎました：'+(i&&i.name||''));render();},
+      e=>{alert('⚠ '+(e.kind==='net'?'Mac mini につながりません（院内の Wi-Fi か確かめてください）':e.message));});},
+  nrForget:()=>{if(!hasNR()||!confirm('この iPad の名簿の鍵を消します（もう一度つなぐには、院長に番号を出してもらいます）。よろしいですか？'))return;
+    HataRoster.forget().then(r=>{NR.paired=null;NR.cand=undefined;NR.key='';NR.statusText='';toast(r&&r.told===false?'⚠ 名簿の鍵を消しました（Mac mini に伝えられなかったので、院長の画面で「止める」を押してください）':'名簿の鍵を消しました');render();});},
+  nrStatus:()=>{if(!hasNR())return;HataRoster.status().then(j=>{NR.statusText=(j.asof?fmtWhen(j.asof)+' 時点・':'まだ名簿がありません・')+(j.count||0)+'人'+(j.stale?'・古くなっています':'')+(j.refreshing?'・取り直し中':'')+(j.last_error?'・前回の取得: '+j.last_error:'');},
+      e=>{if(e&&e.kind==='unpaired')NR.paired=null;NR.statusText=e&&e.kind==='net'?'名簿（Mac mini）につながりません（院内の Wi-Fi か確かめてください）':(e&&e.message||'エラー');}).then(()=>{const el=document.getElementById('nr-status');if(el)el.textContent=NR.statusText;});},
+  nrRefresh:()=>{if(!hasNR())return;HataRoster.refresh().then(j=>toast(j.started?'名簿の取り直しを始めました（数分かかります。終わったら番号を入れ直してください）':j.running?'名簿を取り直している最中です':'⚠ 少し前に取り直したばかりです（'+Math.ceil((j.wait||60)/60)+'分後から）'),
+      e=>{if(e&&e.kind==='unpaired')NR.paired=null;toast('⚠ '+(e&&e.kind==='net'?'名簿（Mac mini）につながりません':(e&&e.message||'エラー')));});},
   pfGender:(v)=>{if(pf.gender===v)v='';pf.sei=document.getElementById('f-sei').value;pf.mei=document.getElementById('f-mei').value;pf.seiKana=document.getElementById('f-seik').value;pf.meiKana=document.getElementById('f-meik').value;pf.gender=v;pfTouch();renderPatientForm(pf._for==='new'?null:pf._for);},
   pfBirth:(part,raw)=>{
     pf.bd[part]=(part==='era')?raw:(raw===''?'':Number(raw));
@@ -4777,6 +4998,7 @@ window.addEventListener('pagehide',flushDraftsNow);
   try{if(netState==='local'){initVault();watchVaultCover();}}catch(e){console.warn('院内保管庫の初期化に失敗',e);} // 端末内保存モードのときだけ
   try{drafts=await draftReadAll();}catch(_){}
   try{roster=await kvGet('chartDict');if(roster&&!Array.isArray(roster.items))roster=null;}catch(_){roster=null;}
+  nrInit();
   try{preRestoreInfo=await kvGet('pre_restore_info');
     if(preRestoreInfo&&Date.now()-new Date(preRestoreInfo.at)>3*86400000){await kvPut('pre_restore',null);await kvPut('pre_restore_info',null);preRestoreInfo=null;} /* 復元の控えは3日で片づける（患者情報を端末に余分に残さない） */if(LOCAL.backend==='ls'&&!lastExport){const r=localStorage.getItem('perio_last_export');lastExport=r?JSON.parse(r):null;}}catch(_){}
   try{await refreshStorageInfo();}catch(_){}
