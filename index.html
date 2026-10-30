@@ -1687,9 +1687,10 @@ const store={
 // ★PocketBase導入時：ミニPCでPBを起動し、下の url に院内サーバーのアドレスを入れるだけ。設定例：'http://192.168.1.50:8090'
 //   url='' のあいだは【端末内保存】。LOCAL.on=false でメモリのみに戻せる。
 const PB={url:''};
-const APP_VERSION='0.18.1';const DATA_SCHEMA=1;
+const APP_VERSION='0.18.2';const DATA_SCHEMA=1;
 // 更新内容（新しい順・アプリ内の「更新内容」とホームの「更新しました」に出す）
 const CHANGES=[
+  ['0.18.2','音声（2回目の声の試験から）：「GO」＝5・「11位」「竜2」＝11・12・「右下、3話に」＝右下3は2・「マイ」＝前。「左下」「右上7と右下」のように歯の場所で区切れた発話は次とつなげて読む'],
   ['0.18.1','欠損歯の登録から始めるのは初めての検査だけ（2回目からは前回までの欠損が入った状態ですぐ数値の入力）。出血の隣の「欠損」ボタンをやめ、上に「🦷 欠損歯登録」ボタン'],
   ['0.18.0','患者名簿は院内の Mac mini だけに：この iPad に読み込んであった名簿（レセコンCSV）を消し、CSV を読み込む欄をなくした。Mac mini につながらないときは氏名・生年月日を手で入れる'],
   ['0.17.1','登録を短く：ホームにカルテ番号を入れると Mac mini の名簿の人が出て、「＋ 登録して開く」を1回押すと登録して患者さんのページが開く。フリガナは任意に。レセコン番号の欄をなくした（カルテ番号と同じ）'],
@@ -3414,12 +3415,15 @@ function vQuadTail(s){s=s.replace(/((?:右上|左上|右下|左下)[、,\s]*[1-8
 // Mac mini（Whisper）が返す1語の読み替え（2026-10-28 院長の実機）：区切られた1語の「C」「シー」＝4・「さあ」「さー」＝3。
 // 「3、10、2」のように区切られた 10〜15 は1つの値（後で文字の区切りを消しても 1 と 0 に分かれないよう、しるしの字 U+E00A〜E00F にする）
 // 院長の声の試験（2026-10-28）で出た聞き違い。発話の全部がこの1語のときだけ（会話の中の「よう」「同様」は変えない）
-const V_WHOLE={'にい':'2','にー':'2','にぃ':'2','ニー':'2','ニイ':'2','ニィ':'2','日':'2','ごお':'5','ごー':'5','ゴー':'5','ゴオ':'5','用':'4','よう':'4','ヨウ':'4','ぴょん':'4','Q':'9','Ｑ':'9','キュー':'9','QQ':'9','ダーナー':'7','ナナ':'7','同様':'動揺','はいの':'排膿','はいのー':'排膿','はいNO':'排膿','はいノー':'排膿','肺の':'排膿'};
+const V_WHOLE={'GO':'5','Go':'5','go':'5','ＧＯ':'5','マイ':'前','竜':'10','にい':'2','にー':'2','にぃ':'2','ニー':'2','ニイ':'2','ニィ':'2','日':'2','ごお':'5','ごー':'5','ゴー':'5','ゴオ':'5','用':'4','よう':'4','ヨウ':'4','ぴょん':'4','Q':'9','Ｑ':'9','キュー':'9','QQ':'9','ダーナー':'7','ナナ':'7','同様':'動揺','はいの':'排膿','はいのー':'排膿','はいNO':'排膿','はいノー':'排膿','肺の':'排膿'};
 function vWhisperWords(p,mode){const B='(^|[\\s、,，。.])',E='(?=$|[\\s、,，。.])';
   const w=p.replace(/[\s、,，。．.！!]/g,'');if(V_WHOLE[w])return V_WHOLE[w];
   p=p.replace(/^(?:肺の|はい[、,，\s]*(?:の|NO|ノー)ー?)[、,，\s]*(?=右上|左上|右下|左下)/,'排膿').replace(/やり下|ひだり下/g,'左下')
     .replace(/((?:右上|左上|右下|左下)[、,，\s]*[1-8])個/g,'$1').replace(/((?:右上|左上|右下|左下)[、,，\s]*[1-8])度(?=[、,，\s]*(?:右上|左上|右下|左下))/g,'$1と')
-    .replace(new RegExp(B+'(?:Q|Ｑ|キュー)'+E,'g'),'$19');
+    .replace(new RegExp(B+'(?:Q|Ｑ|キュー)'+E,'g'),'$19')
+    .replace(/(1[0-5]|[0-9])位(?=$|[\s、,，。.])/g,'$1')                                   // 「11位」「12位」
+    .replace(new RegExp(B+'竜([1-5])'+E,'g'),(m,a,d)=>a+String(10+ +d))                     // 「竜2」＝じゅうに
+    .replace(/((?:右上|左上|右下|左下)[、,，\s]*[1-8])話/g,'$1は');                        // 「右下、3話に」＝右下3は2
   p=p.replace(new RegExp(B+'(?:[CcＣｃ]|シー|しー)'+E,'g'),'$14').replace(new RegExp(B+'(?:さあ|さー|さぁ|サー|サア)'+E,'g'),'$13');
   if(mode!=='mob'&&/[\s、,，]/.test(p))p=p.replace(new RegExp(B+'(1[0-5])'+E,'g'),(m,a,b)=>a+String.fromCharCode(0xE000+ +b));
   return p;}
@@ -3565,9 +3569,9 @@ function voiceEngine(){let p=null;try{p=localStorage.getItem('perio_voice_engine
 function sttProbe(){if(vc.miniOk!=null||typeof createStt!=='function'||typeof location==='undefined'||location.protocol!=='https:')return;
   try{if(!createStt.isSupported().ok){vc.miniOk=false;return;}vc.miniOk=null;createStt({hint:'perio'}).check().then(r=>{vc.miniOk=!!(r&&r.ok);vc.miniMsg=r&&!r.ok?r.message||'':'';vRefreshPanel();}).catch(()=>{vc.miniOk=false;});}catch(_){vc.miniOk=false;}}
 // Mac mini の聞き取りで「右上7と」「右上、7度」のように途中で区切れた発話は、約3秒待って次の発話とつなげて読む
-function sttJoiner(fn){let held=null,timer=null;const tailRe=/(?:右上|左上|右下|左下)[、,，\s]*[1-8][、,，\s]*(?:と|度|ど)[。、,，\s]*$/;
+function sttJoiner(fn){let held=null,timer=null;const tailRe=/(?:(?:右上|左上|右下|左下)[、,，\s]*[1-8][、,，\s]*(?:と|度|ど)|(?:^|と|[、,，\s])(?:右上|左上|右下|左下))[。、,，\s]*$/;
   const flush=()=>{clearTimeout(timer);if(held!=null){const h=held;held=null;fn(h);}};
-  return {push(t){clearTimeout(timer);if(held!=null){t=held+' '+t;held=null;}if(tailRe.test(t)){held=t;timer=setTimeout(flush,3000);return;}fn(t);},flush,drop(){clearTimeout(timer);held=null;}};}
+  return {push(t){clearTimeout(timer);if(held!=null){const h=held.replace(/[。、,，\s]+$/,'');t=(/[右左][上下]$/.test(h)&&t.charAt(0)===h.slice(-1)?h+t.slice(1):h+' '+t);held=null;}if(tailRe.test(t)){held=t;timer=setTimeout(flush,3000);return;}fn(t);},flush,drop(){clearTimeout(timer);held=null;}};}
 // マイクの感度（院長 2026-10-28「集音が良すぎる・もっと小さめでいい」）：低いほど近くの大きな声だけ拾う。既定は「低い」
 const MIC_SENS={normal:{label:'ふつう',minDb:-50,marginDb:10,relDb:15},mid:{label:'やや低い',minDb:-40,marginDb:15,relDb:13},low:{label:'低い',minDb:-32,marginDb:20,relDb:11}};
 function micSens(){let v=null;try{v=localStorage.getItem('perio_mic_sens');}catch(_){}return MIC_SENS[v]?v:'low';}
