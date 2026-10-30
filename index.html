@@ -1687,9 +1687,10 @@ const store={
 // ★PocketBase導入時：ミニPCでPBを起動し、下の url に院内サーバーのアドレスを入れるだけ。設定例：'http://192.168.1.50:8090'
 //   url='' のあいだは【端末内保存】。LOCAL.on=false でメモリのみに戻せる。
 const PB={url:''};
-const APP_VERSION='0.17.0';const DATA_SCHEMA=1;
+const APP_VERSION='0.17.1';const DATA_SCHEMA=1;
 // 更新内容（新しい順・アプリ内の「更新内容」とホームの「更新しました」に出す）
 const CHANGES=[
+  ['0.17.1','登録を短く：ホームにカルテ番号を入れると Mac mini の名簿の人が出て、「＋ 登録して開く」を1回押すと登録して患者さんのページが開く。フリガナは任意に。レセコン番号の欄をなくした（カルテ番号と同じ）'],
   ['0.17.0','患者名簿を院内の Mac mini から：カルテ番号を入れると、Mac mini の名簿からその1人分だけを引く（iPad に名簿を置かない・院内の Wi-Fi だけ・院長が出した番号で iPad ごとにつなぐ）。ホームの「名簿から探す」。バックアップの画面の「患者名簿（Mac mini）」でつなぐ。しばらくは、つながらないときだけこの端末の名簿（レセコンCSV）を使う'],
   ['0.16.5','音声：マイクの感度を選べるように（ふつう／やや低い／低い。初めは「低い」＝近くの声だけ拾い、まわりの話し声を拾いにくい）。音声の詳細と声の試験の画面で切り替え'],
   ['0.16.4','音声（院長の声の試験から）：「にい」「用」「Q」「ダーナー」「同様」「はい、の」などの聞き違いを数字・動揺・排膿として読む。「右上7と…」のように途中で区切れた発話は次とつなげて読む。声の試験の画面に今の入力（深さ・出血・動揺度）を出す'],
@@ -2264,7 +2265,7 @@ function renderHome(){
     </div>`;
   mountVaultBadge();
   // 検索欄は作り直さず一覧だけ書き換える（日本語の変換中は待つ＝iPadの変換が途切れない）
-  const q=document.getElementById('q');const upd=()=>{homeQ=q.value;const pl=document.getElementById('plist');if(pl)pl.innerHTML=patientListHTML();};
+  const q=document.getElementById('q');const upd=()=>{homeQ=q.value;const pl=document.getElementById('plist');if(pl)pl.innerHTML=patientListHTML();nrHomeAuto();};
   q.addEventListener('input',e=>{if(e.isComposing)return;upd();});q.addEventListener('compositionend',upd);
 }
 const SAMPLE_PIDS=new Set(['p001','p002','p003']); // 見本の患者（初めて開いたときに入っている練習用）
@@ -2286,7 +2287,7 @@ function patientListHTML(){
   return nrBox+rosterHTML+shown.map(p=>{const a=computeAge(p.birth);const lt=last.get(p.id);return `
         <button class="plist-item" onclick="APP.openPatient(${jsq(p.id)})">
           <span><span class="pname">${esc(p.name)}</span>${SAMPLE_PIDS.has(p.id)?'<span class="sbadge">見本</span>':''}<span class="pkana">${esc(p.kana)}</span>
-            <div class="pmeta"><span class="mono">${esc(p.no)}</span>${p.chartNo?' ・ カルテ'+esc(p.chartNo):''}${p.recNo?' ・ レセ'+esc(p.recNo):''}${a!=null?' ・ '+a+'歳':''}${lt?' ・ 最終検査 '+ymdJP(lt):''}</div></span>
+            <div class="pmeta"><span class="mono">${esc(p.no)}</span>${p.chartNo?' ・ カルテ'+esc(p.chartNo):''}${p.recNo&&normNo(p.recNo)!==normNo(p.chartNo)?' ・ レセ'+esc(p.recNo):''}${a!=null?' ・ '+a+'歳':''}${lt?' ・ 最終検査 '+ymdJP(lt):''}</div></span>
           <span class="chev">›</span>
         </button>`;}).join('')+(more?`<button class="nb" style="width:100%;margin-top:4px" onclick="APP.homeMore()">さらに表示（ほか ${list.length-HOME_LIMIT}名）</button>`:'');}
 
@@ -2309,13 +2310,12 @@ function renderPatientForm(pid){
     <div class="wrap">
       <div class="card" style="padding:22px;margin-top:20px">
         ${ex?`<p style="font-size:.85rem;color:var(--soft);margin:0 0 16px">患者番号: <span class="mono" style="font-weight:700;color:var(--ink)">${esc(ex.no)}</span></p>`:''}
-        <div class="grid2" style="margin-bottom:14px"><div><label class="fl" for="f-chart">カルテ番号</label><input id="f-chart" class="ic" inputmode="numeric" autocomplete="off" value="${esc(pf.chartNo)}" oninput="APP.pfChart(this.value)" placeholder="例）12345"/></div>
-          <div><label class="fl" for="f-rec">レセコン番号（任意）</label><input id="f-rec" class="ic" inputmode="numeric" value="${esc(pf.recNo||'')}" oninput="APP.pfSet('recNo',this.value)" placeholder="CSV取り込みの照合に使います"/></div></div>
+        <div style="margin-bottom:14px"><label class="fl" for="f-chart">カルテ番号</label><input id="f-chart" class="ic" inputmode="numeric" autocomplete="off" value="${esc(pf.chartNo)}" oninput="APP.pfChart(this.value)" placeholder="例）12345"/></div>
         <div id="dict-cands" style="margin:-6px 0 14px">${dictCandsHTML()}</div>
         <div style="margin-bottom:14px"><label class="fl" for="f-sei">氏名 *</label>
           <div class="grid2"><input id="f-sei" class="ic" value="${esc(pf.sei)}" placeholder="姓）山田" aria-label="姓"/><input id="f-mei" class="ic" value="${esc(pf.mei)}" placeholder="名）太郎" aria-label="名"/></div>
           ${pf.errs.name?`<div class="err">${pf.errs.name}</div>`:''}</div>
-        <div style="margin-bottom:14px"><label class="fl" for="f-seik">フリガナ *</label>
+        <div style="margin-bottom:14px"><label class="fl" for="f-seik">フリガナ（任意）</label>
           <div class="grid2"><input id="f-seik" class="ic" value="${esc(pf.seiKana)}" placeholder="セイ）ヤマダ" aria-label="セイ（フリガナ）"/><input id="f-meik" class="ic" value="${esc(pf.meiKana)}" placeholder="メイ）タロウ" aria-label="メイ（フリガナ）"/></div>
           <p id="kana-hint" style="font-size:.72rem;color:var(--soft);margin:4px 0 0">氏名を入力すると自動で入ります。氏名を直したらフリガナも確かめてください（保存するとカタカナにそろえます）</p>
           ${pf.errs.kana?`<div class="err">${pf.errs.kana}</div>`:''}</div>
@@ -3082,13 +3082,20 @@ function nrCandsHTML(){const k=normNo(pf.chartNo);
   const it=NR.cand,reg=rosterRegistered(it[0]);
   return `<div class="dcands" role="listbox" aria-label="名簿の候補"><button class="dcand" onclick="APP.pfDictPick(${jsq(it[0])})"><span class="mono">No.${esc(it[0])}</span> ${rosterLine(it)}${reg?` <span class="ibadge" style="color:#9a3412;background:#ffedd5">登録済み ${esc(reg.no)}</span>`:''}</button></div>
     <p style="font-size:.72rem;color:var(--soft);margin:4px 0 0">タップすると氏名・生年月日が入ります（名簿：Mac mini・${esc(nrAsofText())}${NR.stale?'・<b style="color:#b45309">古くなっています</b>':''}）。</p>`;}
+// ホームにカルテ番号（数字だけ）を入れたら、止まって少しで自動で名簿に聞く（v0.17.1・院長「手順が多すぎる」）。名前は「名簿から探す」を押したとき
+const isNoQ=s=>/^[0-9０-９]+$/.test(String(s||'').trim());
+let nrHomeTimer=0;
+function nrHomeAuto(){clearTimeout(nrHomeTimer);if(!nrUse()||!isNoQ(homeQ))return;const q=homeQ;
+  nrHomeTimer=setTimeout(()=>{if(homeQ===q&&route.name==='home'&&!(NR.home&&NR.home.q===q))APP.nrHome();},450);}
 function nrHomeHTML(){const h=NR.home&&NR.home.q===homeQ?NR.home:null;let body;
-  if(!h)body=`<button class="tbtn" onclick="APP.nrHome()">名簿から探す</button> <span style="font-size:.72rem;color:var(--soft)">まだ登録していない人を、カルテ番号か名前（2文字以上）で</span>`;
+  if(!h&&isNoQ(homeQ))body='<p style="font-size:.74rem;color:var(--soft);margin:0">名簿（Mac mini）に聞いています…</p>';
+  else if(!h)body=`<button class="tbtn" onclick="APP.nrHome()">名簿から探す</button> <span style="font-size:.72rem;color:var(--soft)">まだ登録していない人を、カルテ番号か名前（2文字以上）で</span>`;
   else if(h.busy)body='<p style="font-size:.74rem;color:var(--soft);margin:0">名簿（Mac mini）に聞いています…</p>';
   else if(h.err)body=`<p style="font-size:.74rem;color:#b91c1c;margin:0">${esc(h.err)}</p>`;
   else{const items=h.items.filter(it=>!rosterRegistered(it[0]));
-    body=items.length?items.map(it=>`<button class="dcand" onclick="APP.newFromRoster(${jsq(it[0])})"><span class="mono">No.${esc(it[0])}</span> ${rosterLine(it)} <span class="ibadge" style="color:#1e3a8a;background:var(--blue-bg)">＋ 登録する</span></button>`).join('')
-      :'<p style="font-size:.74rem;color:var(--soft);margin:0">名簿に見つかりません（まだ登録していない人だけを出します）。</p>';}
+    body=items.length?items.map(it=>`<button class="dcand" onclick="APP.quickAdd(${jsq(it[0])})"><span class="mono">No.${esc(it[0])}</span> ${rosterLine(it)} <span class="ibadge" style="color:#fff;background:#2563eb">＋ 登録して開く</span></button>`).join('')
+      :(isNoQ(homeQ)?`<p style="font-size:.74rem;color:var(--soft);margin:0">名簿にこのカルテ番号の人はいません（${esc(nrAsofText())}）。今日はじめて来た方なら <button class="tbtn" onclick="APP.nrRefresh()">名簿を取り直す</button></p>`
+        :'<p style="font-size:.74rem;color:var(--soft);margin:0">名簿に見つかりません（まだ登録していない人だけを出します）。</p>');}
   return `<div class="card" style="padding:10px 14px;margin:6px 0 12px;border:1px dashed #93c5fd"><div style="font-size:.8rem;color:#1e3a8a;font-weight:700;margin-bottom:6px">📖 名簿（Mac mini）</div>${body}</div>`;}
 function nrCardHTML(){if(!hasNR())return '';const p=NR.paired;
   return `<div class="card" style="padding:18px;margin-top:16px"><h2 style="font-size:.9rem;font-weight:700;margin:0 0 8px">📖 患者名簿（Mac mini）</h2>
@@ -4431,6 +4438,16 @@ window.APP={
     setTimeout(()=>{const el=document.getElementById(it[4]?'f-seik':'f-seik');if(el&&!it[4])el.focus();},60);
     toast(it[4]?'名簿から氏名・フリガナ・生年月日を入れました':'名簿から氏名・生年月日を入れました（フリガナは入れてください）');},
   // ホームの検索で見つかった名簿の人を、新規登録に入れて開く
+  // 名簿の人を1回のタップで登録して、患者さんのページを開く（フリガナは名簿にあれば入れる・無くてよい＝院長 2026-10-30）
+  quickAdd:async no=>{const it=rosterGet(no);if(!it)return;const reg=rosterRegistered(it[0]);if(reg){go({name:'patientDetail',patientId:reg.id});return;}
+    if(!it[3]){APP.newFromRoster(no);return;}                 // 生年月日が名簿に無い人は、登録の画面で入れてもらう
+    const sk=toKata(it[4]||''),mk=toKata(it[5]||'');
+    const np={id:generateId(),no:store.nextNo(),chartNo:it[0],recNo:it[0],sei:it[1],mei:it[2],seiKana:sk,meiKana:mk,gender:it[6]||'',notes:'',birth:it[3],
+      name:it[1]+' '+it[2],kana:(sk||mk)?sk+' '+mk:''};
+    const dup=store.patients.find(x=>nz(x.name)===nz(np.name)&&x.birth===np.birth);
+    if(dup&&!confirm(`同じ患者さんが登録済みかもしれません：\n${dup.no} ${dup.name}（${ymdJP(dup.birth)}${dup.chartNo?'・カルテ'+dup.chartNo:''}）\n\nそれでも新しく登録しますか？`)){go({name:'patientDetail',patientId:dup.id});return;}
+    if(!await db.savePatient(np,true)){showErr(SAVE_FAIL_MSG);return;}
+    toast('登録しました：'+np.name);homeQ='';NR.home=null;go({name:'patientDetail',patientId:np.id});},
   newFromRoster:no=>{const it=rosterGet(no);if(!it)return;
     if(drafts.pf&&drafts.pf.for==='new'&&!confirm('保存されていない新規患者の控えがあります。破棄して、名簿の人を登録しますか？'))return;
     if(drafts.pf&&drafts.pf.for==='new')clearDraft('pf');
@@ -4465,7 +4482,7 @@ window.APP={
     if(!isNo&&nz(raw).length<2){toast('⚠ 名前は2文字以上で探してください');return;}
     const paint=()=>{const pl=document.getElementById('plist');if(pl&&route.name==='home')pl.innerHTML=patientListHTML();};
     NR.home={q,busy:true};paint();
-    (isNo?HataRoster.lookup(raw).then(j=>j.found&&j.item?[nrItem(j.item)]:[]):HataRoster.search(raw).then(j=>(j.items||[]).map(nrItem)))
+    (isNo?HataRoster.lookup(raw).then(j=>{NR.asof=j.asof||NR.asof;return j.found&&j.item?[nrItem(j.item)]:[];}):HataRoster.search(raw).then(j=>(j.items||[]).map(nrItem)))
       .then(items=>{if(NR.home&&NR.home.q===q)NR.home={q,items};paint();},e=>{nrErr(e);if(NR.home&&NR.home.q===q)NR.home={q,err:NR.err};paint();});},
   nrPair:()=>{const el=document.getElementById('nr-code');const v=el?el.value:'';if(!hasNR())return;
     HataRoster.pair(v,'perio').then(()=>HataRoster.info()).then(i=>{NR.paired=i;NR.err='';toast('名簿（Mac mini）につなぎました：'+(i&&i.name||''));render();},
@@ -4488,11 +4505,12 @@ window.APP={
   pfSave:async(pid)=>{
     pf.sei=document.getElementById('f-sei').value;pf.mei=document.getElementById('f-mei').value;
     pf.seiKana=document.getElementById('f-seik').value;pf.meiKana=document.getElementById('f-meik').value;
-    const e={};if(!pf.sei.trim()||!pf.mei.trim())e.name='姓・名を入力してください';if(!pf.seiKana.trim()||!pf.meiKana.trim())e.kana='フリガナを入力してください';if(!pf.birth)e.birth='生年月日を入力してください';
+    const e={};if(!pf.sei.trim()||!pf.mei.trim())e.name='姓・名を入力してください';if(!pf.birth)e.birth='生年月日を入力してください';
     else if(pf.birth>ymdToday())e.birth='未来の日付になっています。生年月日を確かめてください';
     pf.errs=e;if(Object.keys(e).length){renderPatientForm(pid||null);return;}
     const sk=toKata(pf.seiKana),mk=toKata(pf.meiKana);
-    const payload={chartNo:pf.chartNo.trim(),recNo:String(pf.recNo||'').trim(),sei:pf.sei.trim(),mei:pf.mei.trim(),seiKana:sk,meiKana:mk,gender:pf.gender||'',notes:pf.notes,birth:pf.birth,name:pf.sei.trim()+' '+pf.mei.trim(),kana:sk+' '+mk};
+    // レセコン番号はカルテ番号と同じ（院長 2026-10-30）＝欄はなくし、カルテ番号を入れる
+    const payload={chartNo:pf.chartNo.trim(),recNo:pf.chartNo.trim()||String(pf.recNo||'').trim(),sei:pf.sei.trim(),mei:pf.mei.trim(),seiKana:sk,meiKana:mk,gender:pf.gender||'',notes:pf.notes,birth:pf.birth,name:pf.sei.trim()+' '+pf.mei.trim(),kana:(sk||mk)?sk+' '+mk:''};
     // 同じ人の二重登録に気づけるように（同じ氏名＋生年月日／同じカルテ番号）
     const dup=store.patients.find(x=>x.id!==pid&&((nz(x.name)===nz(payload.name)&&x.birth===payload.birth)||(payload.chartNo&&normNo(x.chartNo)===normNo(payload.chartNo))));
     if(dup&&!confirm(`同じ患者さんが登録済みかもしれません：\n${dup.no} ${dup.name}（${ymdJP(dup.birth)}${dup.chartNo?'・カルテ'+dup.chartNo:''}）\n\nそれでも${pid?'保存':'新しく登録'}しますか？`))return;
