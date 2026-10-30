@@ -1687,9 +1687,10 @@ const store={
 // ★PocketBase導入時：ミニPCでPBを起動し、下の url に院内サーバーのアドレスを入れるだけ。設定例：'http://192.168.1.50:8090'
 //   url='' のあいだは【端末内保存】。LOCAL.on=false でメモリのみに戻せる。
 const PB={url:''};
-const APP_VERSION='0.18.0';const DATA_SCHEMA=1;
+const APP_VERSION='0.18.1';const DATA_SCHEMA=1;
 // 更新内容（新しい順・アプリ内の「更新内容」とホームの「更新しました」に出す）
 const CHANGES=[
+  ['0.18.1','欠損歯の登録から始めるのは初めての検査だけ（2回目からは前回までの欠損が入った状態ですぐ数値の入力）。出血の隣の「欠損」ボタンをやめ、上に「🦷 欠損歯登録」ボタン'],
   ['0.18.0','患者名簿は院内の Mac mini だけに：この iPad に読み込んであった名簿（レセコンCSV）を消し、CSV を読み込む欄をなくした。Mac mini につながらないときは氏名・生年月日を手で入れる'],
   ['0.17.1','登録を短く：ホームにカルテ番号を入れると Mac mini の名簿の人が出て、「＋ 登録して開く」を1回押すと登録して患者さんのページが開く。フリガナは任意に。レセコン番号の欄をなくした（カルテ番号と同じ）'],
   ['0.17.0','患者名簿を院内の Mac mini から：カルテ番号を入れると、Mac mini の名簿からその1人分だけを引く（iPad に名簿を置かない・院内の Wi-Fi だけ・院長が出した番号で iPad ごとにつなぐ）。ホームの「名簿から探す」。バックアップの画面の「患者名簿（Mac mini）」でつなぐ。しばらくは、つながらないときだけこの端末の名簿（レセコンCSV）を使う'],
@@ -2092,7 +2093,7 @@ function watchVaultCover(){try{vault.onStatus(()=>{const vc=vaultCover(store.exa
 const HELP=[
  ['flow','毎日の流れ',`<ol class="hl">
   <li>ホームで患者を探す（氏名・フリガナ・番号の一部でよい。空白や全角半角は気にしなくてよい）。いなければ「＋ 新規」。<b>「📖 患者名簿（レセコンCSV）」を読み込んでおくと</b>、まだ登録していない人も検索に出てタップで登録でき、新規登録でカルテ番号を入れるだけで氏名・生年月日が入ります（名簿は毎月など定期的に読み込み直す）。</li>
-  <li>患者ページで「＋ 基本検査」「＋ 精密検査」「＋ P混検」を押す。<b>最初に欠損歯の登録</b>：ない歯（まだ生えていない歯も）を歯式でタップ。前回までの欠損は登録してあります。終わったら「🎤 声で入れる」か「テンキーで入れる」。</li>
+  <li>患者ページで「＋ 基本検査」「＋ 精密検査」「＋ P混検」を押す。<b>初めての検査だけ、最初に欠損歯の登録</b>：ない歯（まだ生えていない歯も）を歯式でタップ。終わったら「🎤 声で入れる」か「テンキーで入れる」。2回目からは前回までの欠損が入った状態ですぐ数値の入力。欠損が増えたら上の「🦷 欠損歯登録」。</li>
   <li><b>深さ</b>：テンキーの数字を押すと次の歯へ進みます。10mm以上は「10+」（押すたび+1）のあと「次 →」。<b>前回の深さ・動揺度が最初から入っている</b>ので、変わった歯だけ直し、変わらなかった歯は「残りは前回と同じ（確認済み）」。</li>
   <li><b>動揺度</b>：テンキーの上の「動揺度」を押して 0〜3（押すと次の歯へ）。「動揺度：残りを全部0」でまとめて0にできます。</li>
   <li><b>出血（BOP）・排膿</b>は毎回空から。「🩸 出血」を押して、出た歯のマスをタップ（排膿は「排膿（青）」を選んでから）。「✓ 終わる」で深さに戻ります。</li>
@@ -3733,7 +3734,8 @@ function renderPerio(pid,examId,newType){
     if(dr.touch&&!dr.touch.site&&type==='precision')(dr.touch.ppd||[]).forEach(n=>touchAllSites(Number(n)));} // 部位の記録が無い古い下書きは、触った歯を全部位確かめた扱い（従来どおり）
   if(!readOnly&&!fixed&&measuresPpd(type)){pe.sel=vFirstFrom(null);pe.site=pe.sel!=null?siteOrder(pe.sel)[0]:0;} // 新しい検査は最初に測る歯を選んだ状態で始める
   // 新しい検査（患者ページの「＋ 基本検査」等から）は、まず欠損歯の登録から（前回の欠損は登録済み。終わったら「テンキーで入れる」か「声で入れる」）
-  if(route.intro){delete route.intro;if(!readOnly&&!fixed&&!dr){pe.intro=true;pe.introMiss0=ORDER.filter(n=>pe.teeth[n].missing).length;pe.tapMode='miss';pe.tapReturn={sel:pe.sel,site:pe.site};pe.sel=null;}}
+  // 欠損歯の登録から始めるのは初めての検査だけ（院長 2026-10-30）。前に検査がある人は前回までの欠損が入った状態で、すぐ数値の入力へ
+  if(route.intro){delete route.intro;if(!readOnly&&!fixed&&!dr&&!all.length){pe.intro=true;pe.introMiss0=ORDER.filter(n=>pe.teeth[n].missing).length;pe.tapMode='miss';pe.tapReturn={sel:pe.sel,site:pe.site};pe.sel=null;}}
   const st=examStats(pe.teeth,type);
   const title=fixed?(EXAM_LABEL[type]+(readOnly?'（閲覧）':'の編集')):EXAM_LABEL[type];
   app.innerHTML=`
@@ -3744,6 +3746,7 @@ function renderPerio(pid,examId,newType){
       :`<div class="pe-tools" id="pe-tools">
         ${hasVoice(type)?`<button id="vbtn" class="vbtn${vc.active||vc.dict?' on':''}" onclick="APP.vToggle()">${vc.active||vc.dict?'● 音声 停止':'🎤 音声入力'}</button>`:''}
         ${hasPlaque(type)?vtabsHTML():''}
+        ${type!=='mixed'?'<button id="miss-reg" class="chip" style="font-weight:700" onclick="APP.missReg()"></button>':''}
         <span id="plq-head" class="plq-head"></span>
         <span style="flex:1"></span>
         <button class="chip" id="exr-chip" onclick="APP.toBelow()"></button>
@@ -3898,7 +3901,7 @@ function missBarHTML(){
   if(!mixed){const pr=modeProgress();
     h+=b('ppd','深さ','#2563eb',!tm&&pm==='ppd',`済 ${pr.ppd}/${pr.all}`);h+=b('mob','動揺度','#374151',(!tm||tm==='mob')&&pm==='mob',`${pr.mob}/${pr.all}`);
     h+=prec?b('bop','🩸 出血','#dc2626',!tm&&pm==='bop',pr.bop?pr.bop+'歯':'この歯'):b('bop','🩸 出血','#dc2626',tm==='bop',pr.bop?pr.bop+'歯':'タップ');}
-  h+=b('miss','🦷 欠損','#475569',tm==='miss',missCnt?missCnt+'歯':'');
+  if(mixed)h+=b('miss','🦷 欠損','#475569',tm==='miss',missCnt?missCnt+'歯':''); // 基本・精密は上の「🦷 欠損歯登録」
   if(mixed||ORDER.some(n=>pe.teeth[n].primary))h+=b('prim','🍼 乳歯','#6d28d9',tm==='prim',primCnt?primCnt+'本':'');
   let out=`<div class="modebar">${h}</div>`;
   if(mixed){const hasHist=pe.hist&&pe.hist.length;
@@ -3922,7 +3925,10 @@ function voiceToPad(m){if(!pe||pe.readOnly)return;
   if(m==='bop'){if(pe.type!=='basic')return;if(pe.tapMode!=='bop'){if(pe.tapMode){pe.tapMode=null;pe.tapReturn=null;}pe.tapMode='bop';pe.intro=false;pe.tapReturn={sel:vc.cursor,site:0};pe.sel=null;}
     if(['bop','pus','none'].includes(vc.bopKind))pe.bopPaint=vc.bopKind;}
   else if(m==='ppd'||m==='mob'){if(pe.tapMode){pe.tapMode=null;pe.tapReturn=null;pe.intro=false;}pe.padMode=m;}}
-function refreshMissBar(){
+// 上の「🦷 欠損歯登録」ボタン（基本・精密）：今の欠損の本数・登録中は色を変える
+function refreshMissReg(){const b=document.getElementById('miss-reg');if(!b||!pe)return;const c=ORDER.filter(n=>pe.teeth[n].missing).length,on=pe.tapMode==='miss';
+  b.textContent=on?'✓ 欠損歯登録を終える':'🦷 欠損歯登録'+(c?'（'+c+'歯）':'');b.style.background=on?'#475569':'#fff';b.style.color=on?'#fff':'#334155';b.style.borderColor=on?'#475569':'';}
+function refreshMissBar(){refreshMissReg();
   if(uiDepth>0)uiPend.mb=true;else refreshMissBarNow();
   const card=document.getElementById('arch-card');if(card){card.style.boxShadow=pe.intro&&pe.tapMode?'0 0 0 3px #f59e0b':pe.tapMode?'0 0 0 2px '+({bop:'#dc2626',mob:'#374151',miss:'#64748b',prim:'#6d28d9'}[pe.tapMode]):'';
     if(card.classList)card.classList.toggle('intro',!!(pe.intro&&pe.tapMode));}}
@@ -4552,6 +4558,7 @@ window.APP={
   setBopPaint:v=>{pe.bopPaint=v;if(hasVoice(pe.type)&&pe.tapMode==='bop'&&['bop','pus','none'].includes(v)){vc.bopKind=v;vRefreshPanel();}refreshMissBar();},
   setMobPaint:v=>{pe.mobPaint=v;refreshMissBar();},
   // v0.15：操作盤のモード。深さ・動揺度＝テンキー（入れたら次の歯へ）、出血・欠損・乳歯＝歯式のマスをタップ
+  missReg:()=>{if(!pe||pe.readOnly)return;if(pe.tapMode==='miss')APP.setMode(pe.padMode||'ppd');else APP.setMode('miss');refreshMissReg();},
   setMode:m=>{if(!pe||pe.readOnly)return;
     if(m==='ppd'||m==='mob'||(m==='bop'&&pe.type==='precision')){if(pe.tapMode)APP.setTapMode(pe.tapMode);pe.padMode=m;
       if(pe.sel==null&&measuresPpd(pe.type)){const f=vFirstFrom(null);if(f!=null)APP.selTooth(f);} // 最後まで入れた後に項目を変えたら、最初の歯から回る
