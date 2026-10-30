@@ -1687,9 +1687,10 @@ const store={
 // ★PocketBase導入時：ミニPCでPBを起動し、下の url に院内サーバーのアドレスを入れるだけ。設定例：'http://192.168.1.50:8090'
 //   url='' のあいだは【端末内保存】。LOCAL.on=false でメモリのみに戻せる。
 const PB={url:''};
-const APP_VERSION='0.17.1';const DATA_SCHEMA=1;
+const APP_VERSION='0.18.0';const DATA_SCHEMA=1;
 // 更新内容（新しい順・アプリ内の「更新内容」とホームの「更新しました」に出す）
 const CHANGES=[
+  ['0.18.0','患者名簿は院内の Mac mini だけに：この iPad に読み込んであった名簿（レセコンCSV）を消し、CSV を読み込む欄をなくした。Mac mini につながらないときは氏名・生年月日を手で入れる'],
   ['0.17.1','登録を短く：ホームにカルテ番号を入れると Mac mini の名簿の人が出て、「＋ 登録して開く」を1回押すと登録して患者さんのページが開く。フリガナは任意に。レセコン番号の欄をなくした（カルテ番号と同じ）'],
   ['0.17.0','患者名簿を院内の Mac mini から：カルテ番号を入れると、Mac mini の名簿からその1人分だけを引く（iPad に名簿を置かない・院内の Wi-Fi だけ・院長が出した番号で iPad ごとにつなぐ）。ホームの「名簿から探す」。バックアップの画面の「患者名簿（Mac mini）」でつなぐ。しばらくは、つながらないときだけこの端末の名簿（レセコンCSV）を使う'],
   ['0.16.5','音声：マイクの感度を選べるように（ふつう／やや低い／低い。初めは「低い」＝近くの声だけ拾い、まわりの話し声を拾いにくい）。音声の詳細と声の試験の画面で切り替え'],
@@ -2254,7 +2255,6 @@ function renderHome(){
         <button class="btn-primary" style="width:auto;padding:0 18px;white-space:nowrap" onclick="APP.newPatient()">＋ 新規</button>
       </div>
       <div style="display:flex;gap:16px;margin:0 0 12px;flex-wrap:wrap">
-        <button class="linkbtn" style="display:inline-flex;align-items:center;gap:5px" onclick="APP.rosterOpen()">📖 患者名簿（レセコンCSV）を読み込む${roster?`<span style="font-size:.74rem;color:var(--soft)">（前回 ${esc(fmtWhen(roster.at).slice(5,10))}・${roster.n.toLocaleString()}名）</span>`:''}</button>
         <button class="linkbtn" style="display:inline-flex;align-items:center;gap:5px" onclick="APP.go({name:'staff'})">👤 衛生士・医院情報</button>
         <button class="linkbtn" style="display:inline-flex;align-items:center;gap:5px" onclick="APP.go({name:'backup'})">💾 バックアップ・データ管理</button>
         <button class="linkbtn" style="display:inline-flex;align-items:center;gap:5px" onclick="APP.help()">❓ 使い方</button>
@@ -2274,13 +2274,13 @@ let homeMore=false;
 function patientListHTML(){
   const q=nz(homeQ);
   const useNet=nrUse();const nrBox=useNet&&q?nrHomeHTML():'';
-  if(!store.patients.length&&!nrBox&&!(q&&rosterSearch(homeQ).length))return `<div class="card" style="text-align:center;color:var(--soft);padding:28px 16px;font-size:.92rem;line-height:1.7">まだ患者さんが登録されていません。<br>「＋ 新規」で登録してください（「📖 患者名簿」を読み込んでおくと、カルテ番号や氏名で探してすぐ登録できます）。</div>`;
+  if(!store.patients.length&&!nrBox)return `<div class="card" style="text-align:center;color:var(--soft);padding:28px 16px;font-size:.92rem;line-height:1.7">まだ患者さんが登録されていません。<br>上の検索欄にカルテ番号を入れると、Mac mini の名簿から1回で登録できます（「＋ 新規」でも登録できます）。</div>`;
   // 最近検査した患者を上に（検査の無い患者は登録の新しい順で後ろ）
   const last=new Map();store.exams.forEach(e=>{if(e.date&&(!last.has(e.patientId)||e.date>last.get(e.patientId)))last.set(e.patientId,e.date);});
   const order=new Map(store.patients.map((p,i)=>[p,i]));
   let list=store.patients.filter(p=>!q||nz(p.name).includes(q)||nz(p.kana).includes(q)||nz(p.no).includes(q)||nz(p.chartNo).includes(q)||nz(p.recNo).includes(q));
   list.sort((a,b)=>{const la=last.get(a.id)||'',lb=last.get(b.id)||'';if(la!==lb)return la<lb?1:-1;return order.get(b)-order.get(a);});
-  const rs=q&&!useNet?rosterSearch(homeQ):[];
+  const rs=[];   // 段階3（v0.18.0）：この端末の名簿は使わない
   const rosterHTML=rs.length?`<div class="card" style="padding:10px 14px;margin:6px 0 12px;border:1px dashed #93c5fd"><div style="font-size:.8rem;color:#1e3a8a;font-weight:700;margin-bottom:6px">📖 名簿にいる人（まだ登録していません）</div>${rs.map(it=>`<button class="dcand" onclick="APP.newFromRoster(${jsq(it[0])})"><span class="mono">No.${esc(it[0])}</span> ${rosterLine(it)} <span class="ibadge" style="color:#1e3a8a;background:var(--blue-bg)">＋ 登録する</span></button>`).join('')}</div>`:'';
   if(!list.length)return nrBox+rosterHTML+(rosterHTML||nrBox?'':'<p style="text-align:center;color:var(--soft);padding:40px 0;font-size:.9rem">該当する患者がいません。氏名・フリガナ・番号の一部で探してください。</p>');
   const more=!q&&!homeMore&&list.length>HOME_LIMIT;const shown=more?list.slice(0,HOME_LIMIT):list;
@@ -2348,7 +2348,7 @@ function renderPatientForm(pid){
 // カルテ番号に合う名簿の候補（新規登録のとき）。編集のときは名簿と違えば知らせる
 function dictCandsHTML(){if(!pf)return '';
   if(nrUse())return nrCandsHTML();
-  if(!roster)return pf._for==='new'?'<p style="font-size:.72rem;color:var(--soft);margin:0">「📖 患者名簿（レセコンCSV）」を読み込むと、カルテ番号を入れるだけで氏名・生年月日が入ります。</p>':'';
+  if(!roster)return pf._for==='new'&&hasNR()?'<p style="font-size:.72rem;color:var(--soft);margin:0">「💾 バックアップ・データ管理」の「患者名簿（Mac mini）」でつなぐと、カルテ番号を入れるだけで氏名・生年月日が入ります。</p>':'';
   if(pf._for!=='new'){const it=pf.chartNo&&rosterMap().get(normNo(pf.chartNo));if(!it)return '';
     const same=nz(it[1]+it[2])===nz(pf.sei+pf.mei)&&(!it[3]||it[3]===pf.birth);
     return same?'':`<div class="banner" style="padding:8px 12px">名簿では：${rosterLine(it)} <button class="tbtn" onclick="APP.pfDictPick(${jsq(it[0])})">名簿の値にする</button></div>`;}
@@ -2443,12 +2443,6 @@ function renderBackup(){
       <button style="width:100%;padding:13px;border:1px solid var(--line);border-radius:16px;background:#fff;color:#374151;font-weight:600;font-size:.9rem;cursor:pointer;margin-top:14px" onclick="APP.exportCsv()">📄 検査の一覧をCSVで書き出す（表計算用）</button>
       <p style="font-size:.74rem;color:var(--soft);margin:6px 2px 0">1検査1行（検査日・種別・担当・BOP率・4mm以上・PCR など）。氏名が入るので、JSONと同じく院外に出さないでください。</p>
       ${nrCardHTML()}
-      <div class="card" style="padding:18px;margin-top:16px">
-        <h2 style="font-size:.9rem;font-weight:700;margin:0 0 8px">📖 患者名簿（レセコンCSV・この端末の中）</h2>
-        <p style="font-size:.8rem;margin:0 0 8px">${rosterInfoHTML()}</p>
-        <p style="font-size:.74rem;color:var(--soft);margin:0 0 10px">レセコンの患者CSV（予約CSVでも可・全患者分）を読み込むと、新規登録でカルテ番号を入れるだけで氏名・生年月日が入り、ホームの検索でもまだ登録していない人が出ます。患者一覧には出ません。名簿はこの端末の中だけに置き、バックアップ・Mac mini には入れません（iPadごとに読み込み・<b>毎月など定期的に読み込み直してください</b>）。</p>
-        <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="nb" style="font-weight:700" onclick="APP.rosterOpen()">📖 名簿を読み込む（置き換え）</button>${roster?'<button class="nb danger" onclick="APP.rosterClear()">名簿を消す</button>':''}<button class="nb" onclick="APP.openImport()">📥 CSVの患者を患者一覧にまとめて登録（従来）</button></div>
-      </div>
       ${rsCardHTML()}
       <button class="nb" style="width:100%;margin-top:14px" onclick="APP.go({name:'vtest'})">🧪 声の試験（Mac mini の聞き取りを原稿で試して記録する・院長用）</button>
       <div id="vault-mount"></div>
@@ -3067,7 +3061,7 @@ function nrPaint(){const el=document.getElementById('dict-cands');if(el)el.inner
 function rosterGet(no){const k=normNo(no);if(NR.cand&&normNo(NR.cand[0])===k)return NR.cand;
   if(NR.home&&NR.home.items){const h=NR.home.items.find(x=>normNo(x[0])===k);if(h)return h;}
   const m=rosterMap();return m&&m.get(k)||null;}
-const nrUse=()=>!!(NR.paired&&!(NR.errKind==='net'&&roster));   // Mac mini に聞く（つながらないときだけ、この端末の名簿があればそちらで。止められた鍵では使わない）
+const nrUse=()=>!!NR.paired;   // 段階3（v0.18.0）：名簿は Mac mini だけ。つながらないときは手で入れる（この端末の名簿は使わない）
 const nrAsofText=()=>NR.asof?fmtWhen(NR.asof)+' 時点':'';
 function nrCandsHTML(){const k=normNo(pf.chartNo);
   if(k&&NR.key!==k)nrAsk(pf.chartNo,true);                      // 編集の画面を開いたとき・番号が入っている新規の画面
@@ -5015,7 +5009,9 @@ window.addEventListener('pagehide',flushDraftsNow);
     storageProblem='起動時に保存データを読み込めませんでした（'+String(e&&e.message||e).slice(0,100)+'）。記録は消えていません。入力は保存されないので、アプリを閉じて開き直してください。直らないときは院長に連絡してください。';}
   try{if(netState==='local'){initVault();watchVaultCover();}}catch(e){console.warn('院内保管庫の初期化に失敗',e);} // 端末内保存モードのときだけ
   try{drafts=await draftReadAll();}catch(_){}
-  try{roster=await kvGet('chartDict');if(roster&&!Array.isArray(roster.items))roster=null;}catch(_){roster=null;}
+  // 段階3（v0.18.0・2026-10-30 院長「段階3もいこうか」）：名簿は Mac mini だけ。前に読み込んだこの端末の名簿は消す
+  try{if(await kvGet('chartDict'))await kvPut('chartDict',null);}catch(_){}
+  roster=null;
   nrInit();
   try{preRestoreInfo=await kvGet('pre_restore_info');
     if(preRestoreInfo&&Date.now()-new Date(preRestoreInfo.at)>3*86400000){await kvPut('pre_restore',null);await kvPut('pre_restore_info',null);preRestoreInfo=null;} /* 復元の控えは3日で片づける（患者情報を端末に余分に残さない） */if(LOCAL.backend==='ls'&&!lastExport){const r=localStorage.getItem('perio_last_export');lastExport=r?JSON.parse(r):null;}}catch(_){}
