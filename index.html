@@ -1687,9 +1687,10 @@ const store={
 // ★PocketBase導入時：ミニPCでPBを起動し、下の url に院内サーバーのアドレスを入れるだけ。設定例：'http://192.168.1.50:8090'
 //   url='' のあいだは【端末内保存】。LOCAL.on=false でメモリのみに戻せる。
 const PB={url:''};
-const APP_VERSION='0.18.3';const DATA_SCHEMA=1;
+const APP_VERSION='0.18.4';const DATA_SCHEMA=1;
 // 更新内容（新しい順・アプリ内の「更新内容」とホームの「更新しました」に出す）
 const CHANGES=[
+  ['0.18.4','音声：数字が続く中に10以上が入ったときは、上の帯に橙で「10 が入りました。違えば『取り消し』」と出します。3回目の声の試験から：「ロック」＝6（「右上、ロック」「左下、ロックは7」も）・「とよ」＝動揺・「灰の 左下6」＝排膿・「第1位」＝11・「右上、用」＝右上4'],
   ['0.18.3','音声：出血の入力は「BOP」に統一。「出血」と言っても入りません（Mac mini が「じゅう」を「出血」と聞き違え、出血の入力に切り替わってしまうため）。「BOP」「4 BOP」「右上6 BOP」「BOPすべてなし」のように言ってください。'],
   ['0.18.2','音声（2回目の声の試験から）：「GO」＝5・「11位」「竜2」＝11・12・「右下、3話に」＝右下3は2・「マイ」＝前。「左下」「右上7と右下」のように歯の場所で区切れた発話は次とつなげて読む'],
   ['0.18.1','欠損歯の登録から始めるのは初めての検査だけ（2回目からは前回までの欠損が入った状態ですぐ数値の入力）。出血の隣の「欠損」ボタンをやめ、上に「🦷 欠損歯登録」ボタン'],
@@ -3367,7 +3368,10 @@ function vApply(res,rawText){
   // フィードバック
   if(vc.sound)vBeep(rej===0&&ok>0);
   if(vc.echo&&notes.length&&window.speechSynthesis){const u=new SpeechSynthesisUtterance(notes.join('、'));u.lang='ja-JP';u.rate=1.15;speechSynthesis.speak(u);}
-  vc.log.unshift({raw:rawText,note:notes.join('、')||'（解釈できず）',rej});
+  // v0.18.4（院長の決定 2026-11-04）：数字が続く中の10以上は、入れたうえで橙で知らせる（Mac mini が「さん さん に」の頭に幻の「10」を付けて返したため）
+  const dg=res.cmds.filter(c=>c.t==='digit'),big=dg.filter(c=>c.v>=10);
+  const warn=dg.length>=2&&big.length&&ok>0&&mode0==='ppd'?big.map(c=>c.v).join('・')+' が入りました。違えば「取り消し」':'';
+  vc.log.unshift({raw:rawText,note:notes.join('、')||'（解釈できず）',rej,warn});
   vc.log=vc.log.slice(0,8);
   vRefreshPanel();
 }
@@ -3416,15 +3420,19 @@ function vQuadTail(s){s=s.replace(/((?:右上|左上|右下|左下)[、,\s]*[1-8
 // Mac mini（Whisper）が返す1語の読み替え（2026-10-28 院長の実機）：区切られた1語の「C」「シー」＝4・「さあ」「さー」＝3。
 // 「3、10、2」のように区切られた 10〜15 は1つの値（後で文字の区切りを消しても 1 と 0 に分かれないよう、しるしの字 U+E00A〜E00F にする）
 // 院長の声の試験（2026-10-28）で出た聞き違い。発話の全部がこの1語のときだけ（会話の中の「よう」「同様」は変えない）
-const V_WHOLE={'GO':'5','Go':'5','go':'5','ＧＯ':'5','マイ':'前','竜':'10','にい':'2','にー':'2','にぃ':'2','ニー':'2','ニイ':'2','ニィ':'2','日':'2','ごお':'5','ごー':'5','ゴー':'5','ゴオ':'5','用':'4','よう':'4','ヨウ':'4','ぴょん':'4','Q':'9','Ｑ':'9','キュー':'9','QQ':'9','ダーナー':'7','ナナ':'7','同様':'動揺','はいの':'排膿','はいのー':'排膿','はいNO':'排膿','はいノー':'排膿','肺の':'排膿'};
+const V_WHOLE={'GO':'5','Go':'5','go':'5','ＧＯ':'5','マイ':'前','竜':'10','にい':'2','にー':'2','にぃ':'2','ニー':'2','ニイ':'2','ニィ':'2','日':'2','ごお':'5','ごー':'5','ゴー':'5','ゴオ':'5','用':'4','よう':'4','ヨウ':'4','ぴょん':'4','Q':'9','Ｑ':'9','キュー':'9','QQ':'9','ダーナー':'7','ナナ':'7','同様':'動揺','はいの':'排膿','はいのー':'排膿','はいNO':'排膿','はいノー':'排膿','肺の':'排膿','灰の':'排膿',
+  'ロック':'6','ろっく':'6','ロク':'6','とよ':'動揺','トヨ':'動揺'};  // 3回目の声の試験（2026-11-04）：ろく→ロック・動揺→とよ・排膿→灰の
 function vWhisperWords(p,mode){const B='(^|[\\s、,，。.])',E='(?=$|[\\s、,，。.])';
   const w=p.replace(/[\s、,，。．.！!]/g,'');if(V_WHOLE[w])return V_WHOLE[w];
-  p=p.replace(/^(?:肺の|はい[、,，\s]*(?:の|NO|ノー)ー?)[、,，\s]*(?=右上|左上|右下|左下)/,'排膿').replace(/やり下|ひだり下/g,'左下')
+  const dw=w.match(/^第([1-5])位$/);if(dw)return String(10+ +dw[1]);                      // 「じゅういち」→「第1位」（発話の全部のときだけ）
+  p=p.replace(/^(?:肺の|灰の|はい[、,，\s]*(?:の|NO|ノー)ー?)[、,，\s]*(?=右上|左上|右下|左下)/,'排膿').replace(/やり下|ひだり下/g,'左下')
     .replace(/((?:右上|左上|右下|左下)[、,，\s]*[1-8])個/g,'$1').replace(/((?:右上|左上|右下|左下)[、,，\s]*[1-8])度(?=[、,，\s]*(?:右上|左上|右下|左下))/g,'$1と')
     .replace(new RegExp(B+'(?:Q|Ｑ|キュー)'+E,'g'),'$19')
     .replace(/(1[0-5]|[0-9])位(?=$|[\s、,，。.])/g,'$1')                                   // 「11位」「12位」
     .replace(new RegExp(B+'竜([1-5])'+E,'g'),(m,a,d)=>a+String(10+ +d))                     // 「竜2」＝じゅうに
-    .replace(/((?:右上|左上|右下|左下)[、,，\s]*[1-8])話/g,'$1は');                        // 「右下、3話に」＝右下3は2
+    .replace(/((?:右上|左上|右下|左下)[、,，\s]*[1-8])話/g,'$1は')                         // 「右下、3話に」＝右下3は2
+    .replace(/((?:右上|左上|右下|左下)[、,，\s]*)(?:ロック|ろっく)(?=$|[\s、,，。.]|は|が|と|から|欠損)/g,'$16')  // 「右上、ロック」「左下、ロックは7」＝6
+    .replace(/((?:右上|左上|右下|左下)[、,，\s]*)用(?=$|[\s、,，。.]|は|が|と|から|欠損)/g,'$14');  // 「右上、用」＝右上4
   p=p.replace(new RegExp(B+'(?:[CcＣｃ]|シー|しー)'+E,'g'),'$14').replace(new RegExp(B+'(?:さあ|さー|さぁ|サー|サア)'+E,'g'),'$13');
   if(mode!=='mob'&&/[\s、,，]/.test(p))p=p.replace(new RegExp(B+'(1[0-5])'+E,'g'),(m,a,b)=>a+String.fromCharCode(0xE000+ +b));
   return p;}
@@ -3603,7 +3611,7 @@ function dictFlush(){const el=document.getElementById('v-dict');if(!el||!pe||pe.
   if(cur.length>120){el.value='';dictCommitted='';}} // 長くなったら欄を空ける（入れ終わった分だけ）
 function dictStatus(){const st=document.getElementById('dict-status');if(!st)return;const l=vc.log[0];
   const tgt=`<span style="color:var(--blue-d)">${VMODE_LABEL[vc.mode]}　${vc.cursor?'▶ '+vToothName(vc.cursor):'（最後の歯まで入力済み）'}</span>`;
-  st.innerHTML=tgt+(l?`<div style="margin-top:4px;color:${l.rej?'#9a3412':'#166534'}">${l.rej?'✗ 入れていません：':'✓ '}${esc(l.note)}<span style="font-weight:400;color:var(--soft)">（「${esc(l.raw)}」）</span></div>`:'<div style="margin-top:4px;font-weight:400;color:var(--soft)">話し終えて約1秒で入ります。「出血」「右上4は5」「取り消し」も使えます。</div>');}
+  st.innerHTML=tgt+(l?`<div style="margin-top:4px;color:${l.rej||l.warn?'#9a3412':'#166534'}">${l.rej?'✗ 入れていません：':'✓ '}${esc(l.note)}${l.warn?'　⚠ '+esc(l.warn):''}<span style="font-weight:400;color:var(--soft)">（「${esc(l.raw)}」）</span></div>`:'<div style="margin-top:4px;font-weight:400;color:var(--soft)">話し終えて約1秒で入ります。「BOP」「右上4は5」「取り消し」も使えます。</div>');}
 function vStop(){if(vc.engine)vc.engine.stop();vc.active=false;const p=document.getElementById('voice-panel');if(p)vRefreshPanel();}
 // 上部のコンパクトな開始バー（押しやすい位置に配置）
 function vBarHTML(){
@@ -3620,7 +3628,7 @@ function vBarHTML(){
           <span id="v-heard" style="font-size:1rem;min-width:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${vHeardHTML()}</span></div>`
         :`<div style="flex:1;font-size:.8rem;color:var(--soft)">音声入力は止まっています。</div>`}
     </div>
-    ${vc.active&&l?`<div style="margin-top:4px;font-size:.84rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:${l.rej?'#9a3412':'#166534'}">${l.rej?'✗ 入れていません：':'✓ '}${esc(l.note)}</div>`:''}
+    ${vc.active&&l?`<div style="margin-top:4px;font-size:.84rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:${l.rej||l.warn?'#9a3412':'#166534'}">${l.rej?'✗ 入れていません：':l.warn?'⚠ ':'✓ '}${esc(l.warn||l.note)}</div>`:''}
     ${vc.err?`<div style="margin-top:6px;font-size:.84rem;color:var(--bad);font-weight:600">${esc(vc.err)}</div>`:''}`;
 }
 // 下部の詳細パネル（モード切替・テキスト確認・ログ・診断）
@@ -3643,7 +3651,7 @@ function vPanelHTML(){
     <div style="margin-top:6px;font-size:.72rem;color:var(--soft)">${vc.miniOk===true?'Mac mini：つながっています。🎤を1回押せば、止めるまで聞き続けます。':vc.miniOk===false?'Mac mini：つながりません'+(vc.miniMsg?'（'+esc(vc.miniMsg)+'）':'')+'。キーボードのマイクで話せます。':'Mac mini：確かめています…'}</div>
     ${vc.err?`<details style="margin-top:6px;font-size:.66rem;color:var(--soft)"><summary>診断の情報（院長向け）</summary>認識API=${window.SpeechRecognition?'標準':window.webkitSpeechRecognition?'webkit':'なし'} / 通信=${navigator.onLine?'オン':'オフ'} / ${isStandalone()?'ホーム画面アプリ':'ブラウザ'} / ${esc((navigator.userAgent.match(/(iPhone|iPad|Macintosh)[^)]*/)||['?'])[0])}</details>`:''}
     ${vc.log.length?`<div style="margin-top:10px;font-size:.7rem;color:var(--soft);border-top:1px solid var(--line2);padding-top:8px">
-      ${vc.log.map(l=>`<div style="display:flex;gap:8px;padding:2px 0"><span style="color:var(--faint);flex:0 0 45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">「${esc(l.raw)}」</span><span style="${l.rej?'color:var(--warn)':''}">→ ${esc(l.note)}</span></div>`).join('')}
+      ${vc.log.map(l=>`<div style="display:flex;gap:8px;padding:2px 0"><span style="color:var(--faint);flex:0 0 45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">「${esc(l.raw)}」</span><span style="${l.rej||l.warn?'color:var(--warn)':''}">→ ${esc(l.note)}${l.warn?'（⚠ '+esc(l.warn)+'）':''}</span></div>`).join('')}
     </div>`:''}`;
 }
 // ───────── 声の試験（院長用・2026-10-28）：原稿を1つずつ読み、Mac mini が聞き取った文字とアプリの読み方を記録して書き出す ─────────
@@ -4915,6 +4923,7 @@ function runSelfTest(){
   ok('会話の混入は入れない（もう一回／次回は3か月後です／抜歯した方が…）',['もう一回','次回は3か月後です','抜歯した方がいいかもしれません','きれいですね','右上4は5くらい'].every(x=>vInterpret(x,'ppd').bad));
   ok('正式な言い方は通す（右上5へ／出血モード／文末の「ね」）',['右上5へ','BOPモード','右上4は5ですね','BOPプラス左上7と6と5','一つ戻す','右上6 BOP'].every(x=>!vInterpret(x,'ppd').bad));
   ok('v18.3 声の「出血」は入れない（「じゅう」の聞き違い）・BOP は入る',['出血','右上6 出血','4 出血','出血すべてなし','出血モード'].every(x=>/BOP/.test(vInterpret(x,'ppd').bad||''))&&['BOP','ビーオーピー','4 BOP','BOPすべてなし','B OP'].every(x=>!vInterpret(x,'ppd').bad));
+  ok('v18.4 3回目の声の試験：ロック＝6・とよ＝動揺・灰の＝排膿・第1位＝11・右上、用＝右上4（ロックンロール・用意は入れない）',(()=>{const g=t=>{const v=vInterpret(t,'ppd');return v.bad?'BAD':v.s;};return g('ロック')==='6'&&g('左下、ロックは7')==='左下6は7'&&g('とよ')==='動揺'&&g('灰の左下6')==='排膿左下6'&&g('第1位')==='11'&&g('右上、用は5')==='右上4は5'&&g('ロックンロール')==='BAD'&&g('右上、用意')==='BAD'&&g('第1位です')==='BAD';})());
   ok('2通りに読める「右上6、7 BOP」は聞き返す',/2通り/.test(vInterpret('右上6、7 BOP','ppd').bad||''));
   ok('紙の印：未測定は「未」・動揺度は未記録と0を書き分け',ppdSpan(null,true)==='未'&&mobCellP({mobility:null},true)==='未'&&mobCellP({mobility:0},true)==='0'&&mobCellP({mobility:null},false)==='−');
   // --- 2026-09 Codexデバッグ由来の回帰チェック ---
