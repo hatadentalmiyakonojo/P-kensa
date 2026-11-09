@@ -1368,7 +1368,7 @@
 </script>
 <script>
 /* ROSTER-CLIENT:BEGIN v1 ─ 患者名簿の窓口につなぐ部品（正本: Ai/患者名簿/client/roster-client.js・直接直さない） */
-/* 患者名簿の窓口（Mac mini :8446）につなぐ部品。歯周検査・口腔機能管理で共通。
+/* 患者名簿の窓口（Mac mini :8446）につなぐ部品。歯周検査・口腔機能管理・インプラント記録・照会状で共通。
    正本は 患者名簿/client/roster-client.js。アプリには 患者名簿/client/inline_roster_client.py で埋め込む
    （アプリの中の ROSTER-CLIENT:BEGIN〜END は手で直さない）。
 
@@ -1377,8 +1377,11 @@
    - 毎回の問い合わせに判子（HMAC-SHA256：方式・道・時刻・使い捨ての値・中身の指紋）を付ける。鍵そのものは送らない
    - 番号や名前は住所（URL）に入れず中身で送る。返事は保存しない（呼び出し側も、タップして登録した人のほかは覚えない）
    - 3秒で返事が無ければあきらめる（手で入れられるまま待たせない）
-   - 鍵はアプリごとに別の置き場所（'device:perio'・'device:oral'）。2つのアプリは同じ住所（github.io）なので、
+   - 鍵はアプリごとに別の置き場所（'device:perio'・'device:oral'・'device:implant'・'device:shokai'＝インプラント記録と照会状は院内ポータル :8445 の住所）。
+     同じ住所のアプリ（github.io の2つ・:8445 の2つ）は IndexedDB を共有するので、
      置き場所を分けないと片方のつなぎ直しでもう片方の鍵が入れ替わる。アプリは最初に HataRoster.app を決める
+   - 番号で見つからないとき（初診の方＝当日の受付でどこでもアポに番号が入る）は lookupFresh が窓口に取り直しを頼み、
+     終わるのを待って（最長4分）もう一度聞く。古い返事を捨てるのはアプリの役目（今までどおり返事の番号と今の欄を比べる）
    - 「鍵を消す」は、窓口にもその鍵を使えなくするよう伝えてから消す
    - 同じ住所の別のアプリに悪いプログラムが入ると、この鍵で判子を押せてしまう（取り出せないが、その場では使える）。
      窓口の回数の上限（1台・24時間で100人）が被害の上限
@@ -1386,9 +1389,9 @@
 (function () {
   'use strict';
   var DB = 'hata-roster', STORE = 'keys';
-  var R = { url: 'https://mini.hatadental.net:8446', timeoutMs: 3000, offset: 0, app: '' };
+  var R = { url: 'https://mini.hatadental.net:8446', timeoutMs: 3000, offset: 0, app: '', pollMs: 8000, waitMaxMs: 240000 };
   function slot() {
-    if (R.app !== 'perio' && R.app !== 'oral') throw Object.assign(new Error('アプリが決まっていません（HataRoster.app）'), { kind: 'input' });
+    if (R.app !== 'perio' && R.app !== 'oral' && R.app !== 'implant' && R.app !== 'shokai') throw Object.assign(new Error('アプリが決まっていません（HataRoster.app）'), { kind: 'input' });
     return 'device:' + R.app;
   }
   var enc = new TextEncoder();
@@ -1507,8 +1510,45 @@
       });
     });
   }
-  // 戻り値 {no（聞いた番号そのまま）, found, item:{no,sei,mei,seiKana,meiKana,birth,sex}|null, asof, stale}
-  R.lookup = function (no) { return signed('/v1/lookup', { no: String(no) }); };
+  // 戻り値 {no（聞いた番号そのまま）, found, item:{no,sei,mei,seiKana,meiKana,birth,sex[,tel＝照会状の鍵のときだけ]}|null, asof, stale}
+  // fresh===true＝見つからなければ窓口が取り直しを始める（返事の refreshing）。ふつうは lookupFresh から使う
+  R.lookup = function (no, fresh) { return signed('/v1/lookup', fresh === true ? { no: String(no), fresh: true } : { no: String(no) }); };
+  // 見つからなければ名簿を取り直して、もう一度聞く。onWait(返事) は取り直しを待ち始めたときに呼ぶ（「取り直しています」を出す）。
+  // 中で R.lookup・R.status を呼ぶ（アプリの自己テストが R.lookup を差し替えると、ここもその差し替えを通る）。
+  // 戻り値は lookup と同じ形（待ったときは waited:true・取り直しが失敗して終わったときは refresh_failed:true も）。同じ番号を待っている最中にまた呼ばれたら、同じ待ちに相乗りする
+  // （ホームと登録の画面で同じ番号を引いても、取り直しの終わりを2つで待たない・どちらにも同じ答えが届く）
+  var waiting = {};
+  function sleep(ms) { return new Promise(function (ok) { setTimeout(ok, ms); }); }
+  R.lookupFresh = function (no, onWait) {
+    no = String(no);
+    var w = waiting[no];
+    if (w) {
+      if (onWait) { try { onWait(w.first); } catch (e) { /* 表示の失敗で待ちを止めない */ } }
+      return w.p;
+    }
+    var t0 = Date.now();
+    return R.lookup(no, true).then(function (j) {
+      if (j.found || !j.refreshing) return j;
+      function poll() {
+        return sleep(R.pollMs).then(function () {
+          return R.status();                                           // 差し替えた R.status がその場で投げても下の ng へ
+        }).then(function (s) { return s; }, function () { return null; }).then(function (s) {
+          if (!s) return j;                                            // つながらない＝最初の返事（見つからない）のまま
+          if (s.refreshing) return Date.now() - t0 < R.waitMaxMs ? poll() : j;
+          return R.lookup(no).then(function (j2) {
+            j2.waited = true;
+            if (s.refresh_failed) j2.refresh_failed = true;            // 取り直しが失敗して終わった（どこでもアポに入れなかった等）
+            return j2;
+          }, function () { return j; });
+        });
+      }
+      w = waiting[no] = { first: j, p: null };
+      // 待ちは成功でも失敗でも必ず片付ける（残ると、同じ番号の次の問い合わせが古い答えにつながる）
+      w.p = poll().then(function (r) { delete waiting[no]; return r; }, function (e) { delete waiting[no]; throw e; });
+      if (onWait) { try { onWait(j); } catch (e) { /* 同上 */ } }
+      return w.p;
+    });
+  };
   R.search = function (q) { return signed('/v1/search', { q: String(q) }); };
   R.refresh = function () { return signed('/v1/refresh', {}); };
   R.status = function () { return signed('/v1/status', {}); };
@@ -1687,9 +1727,10 @@ const store={
 // ★PocketBase導入時：ミニPCでPBを起動し、下の url に院内サーバーのアドレスを入れるだけ。設定例：'http://192.168.1.50:8090'
 //   url='' のあいだは【端末内保存】。LOCAL.on=false でメモリのみに戻せる。
 const PB={url:''};
-const APP_VERSION='0.18.5';const DATA_SCHEMA=1;
+const APP_VERSION='0.18.6';const DATA_SCHEMA=1;
 // 更新内容（新しい順・アプリ内の「更新内容」とホームの「更新しました」に出す）
 const CHANGES=[
+  ['0.18.6','初診の方：カルテ番号で名簿に見つからないときは、Mac mini が今日の予約を取り直して（1分ほど）もう一度聞きます。どこでもアポの予約にカルテ番号を入れておけば、ボタンを押さなくても名前が出ます'],
   ['0.18.5','音声（4回目の声の試験・ピンマイクから）：「まえ」「まい」＝前・「ジュー」＝10・「なーなー」＝7・「ひょん」＝4・「逆逆上上」（に に さん さん）＝2 2 3 3'],
   ['0.18.4','音声：数字が続く中に10以上が入ったときは、上の帯に橙で「10 が入りました。違えば『取り消し』」と出します。3回目の声の試験から：「ロック」＝6（「右上、ロック」「左下、ロックは7」も）・「とよ」＝動揺・「灰の 左下6」＝排膿・「第1位」＝11・「右上、用」＝右上4'],
   ['0.18.3','音声：出血の入力は「BOP」に統一。「出血」と言っても入りません（Mac mini が「じゅう」を「出血」と聞き違え、出血の入力に切り替わってしまうため）。「BOP」「4 BOP」「右上6 BOP」「BOPすべてなし」のように言ってください。'],
@@ -3049,18 +3090,25 @@ function rosterSearch(q){const m=rosterMap();if(!m)return [];const raw=String(q|
 // ───────── 患者名簿（Mac mini）＝院内の Mac mini に1人ずつ聞く（v0.17.0。設計: 書類・資料/企画・レポート/患者名簿の自動取り込み_設計.html）
 // iPad には名簿を置かない。並走の間は、Mac mini につながらないときだけ、この端末の名簿（レセコンCSV）があればそれを使う。
 // 聞いた答えは画面に出すだけで覚えない（タップして登録した人は今までどおり患者として保存。登録の下書きにも残る）。
-const NR={paired:null,key:'',cand:undefined,asof:'',stale:false,err:'',errKind:'',timer:0,home:null,statusText:''};
+const NR={paired:null,key:'',cand:undefined,asof:'',stale:false,err:'',errKind:'',timer:0,home:null,statusText:'',refreshing:false,waited:false,failed:false};
 const hasNR=()=>typeof HataRoster!=='undefined';
 if(hasNR())HataRoster.app='perio';   // 鍵の置き場所はアプリごと（口腔機能管理と同じ住所なので分ける）
 const nrItem=x=>[String(x.no||''),x.sei||'',x.mei||'',x.birth||'',x.seiKana||'',x.meiKana||'',x.sex||''];   // この端末の名簿と同じ形
+// 番号で引く。見つからなければ Mac mini が名簿を取り直し、終わるのを待ってもう一度聞く（v0.18.6・初診の方＝当日の受付でどこでもアポに番号を入れた人）
+const nrLookup=(no,onWait)=>HataRoster.lookupFresh?HataRoster.lookupFresh(String(no),onWait):HataRoster.lookup(String(no));
+const NR_REFRESHING='名簿にまだいないので、Mac mini が今日の予約を取り直しています（1分ほど）…　急ぐときは手で入れてもかまいません';
+const NR_FAILED='名簿の取り直しがうまくいきませんでした（Mac mini がどこでもアポから予約を取れませんでした）。手で入れてください';
+const NR_WAITED='取り直しても名簿にこのカルテ番号の人はいません。どこでもアポの予約にカルテ番号が入っているか確かめるか、手で入れてください';
 function nrInit(){if(!hasNR())return Promise.resolve();return HataRoster.info().then(i=>{NR.paired=i;if(i&&route&&(route.name==='home'||route.name==='backup'||route.name==='patientForm'))render();}).catch(()=>{});}
 function nrErr(e){NR.errKind=e&&e.kind||'';NR.err=NR.errKind==='net'?'名簿（Mac mini）につながりません（院内の Wi-Fi か確かめてください）':(e&&e.message||'名簿（Mac mini）でエラー');
   if(NR.errKind==='unpaired')NR.paired=null;}
 // カルテ番号を打ち終えて少し止まったら聞く。打ち直したあとに届いた古い返事は捨てる（返事に付いた番号と今の欄を比べる）
-function nrAsk(no,now){clearTimeout(NR.timer);const k=normNo(no);NR.key=k;NR.cand=undefined;NR.err='';NR.errKind='';if(!k||!NR.paired||!hasNR())return;
-  NR.timer=setTimeout(()=>{HataRoster.lookup(String(no)).then(j=>{if(NR.key!==k||normNo(j.no)!==k||!pf||normNo(pf.chartNo)!==k)return;
-      NR.cand=j.found&&j.item?nrItem(j.item):null;NR.asof=j.asof||'';NR.stale=!!j.stale;nrPaint();},
-    e=>{if(NR.key!==k)return;nrErr(e);nrPaint();});},now?0:450);}
+function nrAsk(no,now){clearTimeout(NR.timer);const k=normNo(no);NR.key=k;NR.cand=undefined;NR.err='';NR.errKind='';NR.refreshing=false;NR.waited=false;NR.failed=false;if(!k||!NR.paired||!hasNR())return;
+  NR.timer=setTimeout(()=>{nrLookup(no,()=>{if(NR.key!==k)return;NR.refreshing=true;nrPaint();}).then(j=>{
+      // 画面を閉じた・番号が変わった＝答えは捨てる。同じ番号の画面を開き直したら聞き直す（「取り直しています」のまま残さない）
+      if(NR.key!==k||normNo(j.no)!==k||!pf||normNo(pf.chartNo)!==k){if(NR.key===k){NR.key='';NR.refreshing=false;}return;}
+      NR.refreshing=false;NR.waited=!!j.waited;NR.failed=!!j.refresh_failed;NR.cand=j.found&&j.item?nrItem(j.item):null;NR.asof=j.asof||'';NR.stale=!!j.stale;nrPaint();},
+    e=>{if(NR.key!==k)return;NR.refreshing=false;nrErr(e);nrPaint();});},now?0:450);}
 function nrPaint(){const el=document.getElementById('dict-cands');if(el)el.innerHTML=dictCandsHTML();}
 // 名簿の1人（Mac mini の答え → ホームで探した答え → この端末の名簿）
 function rosterGet(no){const k=normNo(no);if(NR.cand&&normNo(NR.cand[0])===k)return NR.cand;
@@ -3076,7 +3124,8 @@ function nrCandsHTML(){const k=normNo(pf.chartNo);
     return same?'':`<div class="banner" style="padding:8px 12px">名簿では：${rosterLine(it)} <button class="tbtn" onclick="APP.pfDictPick(${jsq(it[0])})">名簿の値にする</button></div>`;}
   if(pf._dictPicked||!k)return '';
   if(NR.err)return small(esc(NR.err)+'（氏名は手で入れてください）','#b91c1c');
-  if(NR.cand===undefined)return small('名簿（Mac mini）に聞いています…');
+  if(NR.cand===undefined)return small(NR.refreshing?NR_REFRESHING:'名簿（Mac mini）に聞いています…');
+  if(!NR.cand&&NR.waited)return small((NR.failed?NR_FAILED:NR_WAITED)+`（${esc(nrAsofText())}）`);
   if(!NR.cand)return small(`名簿にこのカルテ番号の人はいません（${esc(nrAsofText())}）。今日はじめて来た方なら <button class="tbtn" onclick="APP.nrRefresh()">名簿を取り直す</button>`);
   const it=NR.cand,reg=rosterRegistered(it[0]);
   return `<div class="dcands" role="listbox" aria-label="名簿の候補"><button class="dcand" onclick="APP.pfDictPick(${jsq(it[0])})"><span class="mono">No.${esc(it[0])}</span> ${rosterLine(it)}${reg?` <span class="ibadge" style="color:#9a3412;background:#ffedd5">登録済み ${esc(reg.no)}</span>`:''}</button></div>
@@ -3089,11 +3138,12 @@ function nrHomeAuto(){clearTimeout(nrHomeTimer);if(!nrUse()||!isNoQ(homeQ))retur
 function nrHomeHTML(){const h=NR.home&&NR.home.q===homeQ?NR.home:null;let body;
   if(!h&&isNoQ(homeQ))body='<p style="font-size:.74rem;color:var(--soft);margin:0">名簿（Mac mini）に聞いています…</p>';
   else if(!h)body=`<button class="tbtn" onclick="APP.nrHome()">名簿から探す</button> <span style="font-size:.72rem;color:var(--soft)">まだ登録していない人を、カルテ番号か名前（2文字以上）で</span>`;
-  else if(h.busy)body='<p style="font-size:.74rem;color:var(--soft);margin:0">名簿（Mac mini）に聞いています…</p>';
+  else if(h.busy)body=`<p style="font-size:.74rem;color:var(--soft);margin:0">${h.refreshing?NR_REFRESHING:'名簿（Mac mini）に聞いています…'}</p>`;
   else if(h.err)body=`<p style="font-size:.74rem;color:#b91c1c;margin:0">${esc(h.err)}</p>`;
   else{const items=h.items.filter(it=>!rosterRegistered(it[0]));
     body=items.length?items.map(it=>`<button class="dcand" onclick="APP.quickAdd(${jsq(it[0])})"><span class="mono">No.${esc(it[0])}</span> ${rosterLine(it)} <span class="ibadge" style="color:#fff;background:#2563eb">＋ 登録して開く</span></button>`).join('')
-      :(isNoQ(homeQ)?`<p style="font-size:.74rem;color:var(--soft);margin:0">名簿にこのカルテ番号の人はいません（${esc(nrAsofText())}）。今日はじめて来た方なら <button class="tbtn" onclick="APP.nrRefresh()">名簿を取り直す</button></p>`
+      :(isNoQ(homeQ)&&h.waited?`<p style="font-size:.74rem;color:var(--soft);margin:0">${h.failed?NR_FAILED:NR_WAITED}（${esc(nrAsofText())}）</p>`
+        :isNoQ(homeQ)?`<p style="font-size:.74rem;color:var(--soft);margin:0">名簿にこのカルテ番号の人はいません（${esc(nrAsofText())}）。今日はじめて来た方なら <button class="tbtn" onclick="APP.nrRefresh()">名簿を取り直す</button></p>`
         :'<p style="font-size:.74rem;color:var(--soft);margin:0">名簿に見つかりません（まだ登録していない人だけを出します）。</p>');}
   return `<div class="card" style="padding:10px 14px;margin:6px 0 12px;border:1px dashed #93c5fd"><div style="font-size:.8rem;color:#1e3a8a;font-weight:700;margin-bottom:6px">📖 名簿（Mac mini）</div>${body}</div>`;}
 function nrCardHTML(){if(!hasNR())return '';const p=NR.paired;
@@ -4498,8 +4548,9 @@ window.APP={
     if(!isNo&&nz(raw).length<2){toast('⚠ 名前は2文字以上で探してください');return;}
     const paint=()=>{const pl=document.getElementById('plist');if(pl&&route.name==='home')pl.innerHTML=patientListHTML();};
     NR.home={q,busy:true};paint();
-    (isNo?HataRoster.lookup(raw).then(j=>{NR.asof=j.asof||NR.asof;return j.found&&j.item?[nrItem(j.item)]:[];}):HataRoster.search(raw).then(j=>(j.items||[]).map(nrItem)))
-      .then(items=>{if(NR.home&&NR.home.q===q)NR.home={q,items};paint();},e=>{nrErr(e);if(NR.home&&NR.home.q===q)NR.home={q,err:NR.err};paint();});},
+    (isNo?nrLookup(raw,()=>{if(NR.home&&NR.home.q===q){NR.home={q,busy:true,refreshing:true};paint();}})
+        .then(j=>{NR.asof=j.asof||NR.asof;const r=j.found&&j.item?[nrItem(j.item)]:[];r.waited=!!j.waited;r.failed=!!j.refresh_failed;return r;}):HataRoster.search(raw).then(j=>(j.items||[]).map(nrItem)))
+      .then(items=>{if(NR.home&&NR.home.q===q)NR.home={q,items,waited:!!items.waited,failed:!!items.failed};paint();},e=>{nrErr(e);if(NR.home&&NR.home.q===q)NR.home={q,err:NR.err};paint();});},
   nrPair:()=>{const el=document.getElementById('nr-code');const v=el?el.value:'';if(!hasNR())return;
     HataRoster.pair(v,'perio').then(()=>HataRoster.info()).then(i=>{NR.paired=i;NR.err='';toast('名簿（Mac mini）につなぎました：'+(i&&i.name||''));render();},
       e=>{alert('⚠ '+(e.kind==='net'?'Mac mini につながりません（院内の Wi-Fi か確かめてください）':e.message));});},
